@@ -26,6 +26,25 @@ test("chat request keeps the key in the Authorization header and preserves multi
   assert.equal(body.messages[0].content[1].type, "image_url");
   assert.equal(response.headers.get("Content-Type"), "text/event-stream");
   assert.equal(JSON.stringify(body).includes("test-key"), false);
+  assert.equal(body.plugins, undefined);
+});
+
+test("private PDF chat sends a file part with the free PDF parser", async () => {
+  let body: any;
+  const fetcher: typeof fetch = async (_input, init) => {
+    body = JSON.parse(String(init?.body));
+    return new Response("data: [DONE]\n\n", { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  };
+  await createChatCompletion({
+    apiKey: "test-key", model: "openrouter/auto", fetcher,
+    messages: [{ role: "user", content: [
+      { type: "text", text: "Summarize the private document" },
+      { type: "file", file: { filename: "document.pdf", file_data: "data:application/pdf;base64,JVBERi0=" } }
+    ] }]
+  });
+  assert.deepEqual(body.plugins, [{ id: "file-parser", pdf: { engine: "cloudflare-ai" } }]);
+  assert.equal(body.messages[0].content[1].file.filename, "document.pdf");
+  assert.match(body.messages[0].content[1].file.file_data, /^data:application\/pdf;base64,/);
 });
 
 test("provider errors expose status without echoing provider data or secrets", async () => {

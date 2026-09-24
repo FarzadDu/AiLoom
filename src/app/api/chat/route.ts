@@ -35,17 +35,27 @@ async function messageContent(ownerId: string, blocks: ContentBlock[], budget: {
   for (const block of blocks) {
     if (block.type === "text") {
       if (block.text) parts.push({ type: "text", text: block.text });
-    } else if (block.type === "image") {
+    } else if (block.type === "image" || block.type === "file") {
       const asset = getOwnedAsset(ownerId, block.assetId);
-      if (!asset || asset.kind !== "image" || !["image/png", "image/jpeg", "image/webp"].includes(asset.mimeType)) {
-        throw new Error("Invalid chat image.");
+      const validImage = block.type === "image" && asset?.kind === "image" &&
+        ["image/png", "image/jpeg", "image/webp"].includes(asset.mimeType);
+      const validPdf = block.type === "file" && asset?.kind === "file" && asset.mimeType === "application/pdf";
+      if (!asset || (!validImage && !validPdf)) {
+        throw new Error("Invalid chat attachment.");
       }
       if (asset.sizeBytes > 10_000_000 || asset.sizeBytes > budget.remaining) {
-        throw new Error("Chat images exceed the 20 MB context limit.");
+        throw new Error("Chat attachments exceed the 20 MB context limit.");
       }
       const bytes = await readFile(mediaPath(asset.storageKey));
       budget.remaining -= bytes.length;
-      parts.push({ type: "image_url", image_url: { url: `data:${asset.mimeType};base64,${bytes.toString("base64")}` } });
+      if (validPdf) {
+        parts.push({ type: "file", file: {
+          filename: (asset.originalName || "document.pdf").replace(/[\u0000-\u001f\u007f]/g, "_").slice(0, 240),
+          file_data: `data:application/pdf;base64,${bytes.toString("base64")}`
+        } });
+      } else {
+        parts.push({ type: "image_url", image_url: { url: `data:${asset.mimeType};base64,${bytes.toString("base64")}` } });
+      }
     }
   }
   if (parts.every(part => part.type === "text")) return parts.map(part => part.type === "text" ? part.text : "").join("\n");
@@ -76,11 +86,12 @@ export async function POST(request: Request) {
   if (new Set(attachmentIds).size !== attachmentIds.length) {
     return Response.json({ error: "Duplicate attachments." }, { status: 400 });
   }
-  for (const id of attachmentIds) {
-    const asset = getOwnedAsset(currentUser.id, id);
-    if (!asset || asset.kind !== "image" || !["image/png", "image/jpeg", "image/webp"].includes(asset.mimeType)) {
-      return Response.json({ error: "Only your PNG, JPEG and WebP images can be attached to chat." }, { status: 422 });
-    }
+  const attachments = attachmentIds.map(id => getOwnedAsset(currentUser.id, id));
+  if (attachments.some(asset => !asset || asset.sizeBytes > 10_000_000 || !(
+    asset.kind === "image" && ["image/png", "image/jpeg", "image/webp"].includes(asset.mimeType) ||
+    asset.kind === "file" && asset.mimeType === "application/pdf"
+  ))) {
+    return Response.json({ error: "Attach your PNG, JPEG, WebP or PDF file under 10 MB." }, { status: 422 });
   }
 
   const existing = parsed.conversationId ? getConversation(currentUser.id, parsed.conversationId) : null;
@@ -97,7 +108,7 @@ export async function POST(request: Request) {
   const history = existing ? (listMessages(currentUser.id, existing.id, { limit: 30 }) ?? []) : [];
   const userBlocks: ContentBlock[] = [
     ...(prompt ? [{ type: "text" as const, text: prompt }] : []),
-    ...attachmentIds.map(assetId => ({ type: "image" as const, assetId }))
+    ...attachmentIds.map((assetId, index) => ({ type: attachments[index]?.kind === "file" ? "file" as const : "image" as const, assetId }))
   ];
   const messages: ChatMessage[] = [];
   if (specialist) messages.push({ role: "system", content: specialist.systemPrompt });
@@ -110,7 +121,7 @@ export async function POST(request: Request) {
     }
     messages.push({ role: "user", content: await messageContent(currentUser.id, userBlocks, budget) });
   } catch {
-    return Response.json({ error: "Could not read the attached images or the image context is too large." }, { status: 422 });
+    return Response.json({ error: "Could not read the attachments or their combined context is too large." }, { status: 422 });
   }
 
   let upstream: Response | null = null;

@@ -2,7 +2,8 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 export type ChatPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "file"; file: { filename: string; file_data: string } };
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -58,12 +59,15 @@ function requiredKey(apiKey?: string): string {
 
 export async function createChatCompletion(request: ChatRequest): Promise<Response> {
   const apiKey = requiredKey(request.apiKey);
+  const hasPdf = request.messages.some(message => Array.isArray(message.content) &&
+    message.content.some(part => part.type === "file"));
   const response = await (request.fetcher || fetch)(OPENROUTER_BASE_URL + "/chat/completions", {
     method: "POST",
     headers: headers(apiKey, request.siteUrl),
     body: JSON.stringify({
       model: request.model,
       messages: request.messages,
+      ...(hasPdf ? { plugins: [{ id: "file-parser", pdf: { engine: "cloudflare-ai" } }] } : {}),
       stream: request.stream ?? true,
       ...(request.sessionId ? { session_id: request.sessionId } : {})
     }),

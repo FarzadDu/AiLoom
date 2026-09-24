@@ -1,5 +1,5 @@
 import { getCurrentUser, mutationOriginAllowed } from "@/server/auth/access";
-import { createAsset, listAssets } from "@/server/content/assets";
+import { createAsset, listAssetsPage, parseAssetCursor } from "@/server/content/assets";
 import { deletePrivateFile, savePrivateFile } from "@/server/storage/private-files";
 
 export const runtime = "nodejs";
@@ -7,16 +7,30 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   const current = await getCurrentUser(request.headers);
   if (!current) return Response.json({ error: "Sign in required." }, { status: 401 });
-  const kind = new URL(request.url).searchParams.get("kind");
+  const params = new URL(request.url).searchParams;
+  const kind = params.get("kind");
+  const source = params.get("source");
   if (kind && !["image", "video", "audio", "file"].includes(kind)) {
     return Response.json({ error: "Invalid file kind." }, { status: 400 });
   }
-  const assets = listAssets(current.id, { kind: kind as "image" | "video" | "audio" | "file" | undefined });
-  return Response.json({ assets: assets.map(asset => ({
+  if (source && source !== "upload" && source !== "generation") {
+    return Response.json({ error: "Invalid file source." }, { status: 400 });
+  }
+  const limitValue = params.get("limit");
+  const limit = limitValue === null ? 100 : Number(limitValue);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+    return Response.json({ error: "Invalid page size." }, { status: 400 });
+  }
+  let cursor;
+  try { cursor = parseAssetCursor(params.get("cursor")); }
+  catch { return Response.json({ error: "Invalid asset cursor." }, { status: 400 }); }
+  const page = listAssetsPage(current.id, { kind: kind as "image" | "video" | "audio" | "file" | undefined,
+    source: source as "upload" | "generation" | undefined, limit, cursor });
+  return Response.json({ assets: page.assets.map(asset => ({
     id: asset.id, kind: asset.kind, source: asset.source, visibility: asset.visibility,
     mimeType: asset.mimeType, originalName: asset.originalName, sizeBytes: asset.sizeBytes,
     createdAt: asset.createdAt, url: `/api/assets/${asset.id}`
-  })) }, { headers: { "Cache-Control": "no-store" } });
+  })), nextCursor: page.nextCursor }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(request: Request) {

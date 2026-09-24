@@ -3,7 +3,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Ailoom — One space for your ideas",
-  description: "A private, bilingual workspace for conversations, images, video, audio and focused guidance."
+  description: "A private, bilingual workspace for conversations, images, video, audio and focused guidance.",
+  robots: { index: false, follow: false }
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

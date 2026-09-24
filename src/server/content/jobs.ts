@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, or } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db";
@@ -32,23 +33,65 @@ function hydrate(row: typeof generationJob.$inferSelect) {
   return { ...row, input: decodeJson(row.inputJson), output: row.outputJson ? decodeJson(row.outputJson) : null };
 }
 
+const referenceKeys = new Set(["imageUrl", "videoUrl", "maskVideoUrl", "imageUrls", "videoUrls", "audioUrls"]);
+
+function comparableReferenceUrl(value: string): string {
+  try {
+    const base = process.env.PUBLIC_BASE_URL?.trim();
+    if (!base) return value;
+    const url = new URL(value);
+    const expectedOrigin = new URL(base).origin;
+    const match = /^\/api\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(url.pathname);
+    if (url.origin !== expectedOrigin || !match || !url.searchParams.has("expires") ||
+      !url.searchParams.has("token") ||
+      [...url.searchParams.keys()].some(key => key !== "expires" && key !== "token")) return value;
+    return `private-asset:${match[1].toLowerCase()}`;
+  } catch { return value; }
+}
+
+function comparablePayload(value: JsonValue, key = ""): JsonValue {
+  if (typeof value === "string") return referenceKeys.has(key) ? comparableReferenceUrl(value) : value;
+  if (Array.isArray(value)) return value.map(item => comparablePayload(item, key));
+  if (value && typeof value === "object") return Object.fromEntries(
+    Object.entries(value).map(([childKey, child]) => [childKey, comparablePayload(child, childKey)]));
+  return value;
+}
+
+export class GenerationIdempotencyConflictError extends Error {
+  constructor() {
+    super("This request key was already used for a different generation.");
+    this.name = "GenerationIdempotencyConflictError";
+  }
+}
+
 export function createGenerationJob(ownerId: string, input: {
   kind: JobKind; provider: string; providerModel: string; projectId?: string | null;
-  payload: JsonValue; costEstimateMicrosUsd?: number | null;
+  payload: JsonValue; costEstimateMicrosUsd?: number | null; idempotencyKey?: string;
 }) {
-  const { payload, ...metadata } = input;
+  const { payload, idempotencyKey, ...metadata } = input;
   const parsed = newJobSchema.parse(metadata);
+  const jobId = idempotencyKey === undefined ? randomUUID() : z.uuid().parse(idempotencyKey);
   requireOwnedProject(ownerId, parsed.projectId);
   const now = new Date();
   const record = {
-    id: randomUUID(), ownerId, projectId: parsed.projectId ?? null,
+    id: jobId, ownerId, projectId: parsed.projectId ?? null,
     kind: parsed.kind, provider: parsed.provider, providerModel: parsed.providerModel,
     externalId: null, state: "queued" as const, inputJson: encodeJson(payload), outputJson: null,
     costEstimateMicrosUsd: parsed.costEstimateMicrosUsd ?? null, errorCode: null,
     createdAt: now, updatedAt: now, completedAt: null
   };
-  getDb().insert(generationJob).values(record).run();
-  return hydrate(record);
+  const inserted = getDb().insert(generationJob).values(record).onConflictDoNothing().run();
+  if (inserted.changes === 1) return hydrate(record);
+  // The primary key is the caller's stable request UUID. A duplicate response
+  // returns the existing job only for precisely the same owner and request.
+  const existing = getDb().select().from(generationJob).where(eq(generationJob.id, jobId)).get();
+  if (!existing || existing.ownerId !== ownerId || existing.kind !== parsed.kind ||
+    existing.provider !== parsed.provider || existing.providerModel !== parsed.providerModel ||
+    existing.projectId !== (parsed.projectId ?? null) ||
+    !isDeepStrictEqual(comparablePayload(decodeJson(existing.inputJson)), comparablePayload(payload))) {
+    throw new GenerationIdempotencyConflictError();
+  }
+  return hydrate(existing);
 }
 
 export function getGenerationJob(ownerId: string, jobId: string) {

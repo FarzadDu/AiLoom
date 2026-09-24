@@ -4,11 +4,12 @@ Ailoom is an English-first, Persian-capable, invite-only AI workspace. The curre
 
 ## Current capabilities
 
-- Chat is the first screen, supports English and Persian direction, remembers the selected OpenRouter model, and stores private conversations. Messages can include uploaded images, generated images, and cited web-search results.
+- Chat is the first screen, supports English and Persian direction, remembers the selected OpenRouter model, and stores private conversations. Messages can include uploaded images, PDF documents, generated images, and cited web-search results. A PDF attached to chat is sent to OpenRouter for parsing with its Cloudflare AI parser and model response; chat limits each attachment to 10 MB.
 - Image Studio can create with Kie Nano Banana 2, WaveSpeed Z Image Turbo or fal FLUX.2 Pro, and edit a reference image with fal Qwen Image Edit.
 - Video Studio can create with fal Veo 3.1 Fast or Seedance 2.5, animate a reference image, and queue a short temporal repair. Repair preserves the untouched video intervals and original audio after the provider returns its edited interval. A public HTTPS origin is required for provider access to private references and has not yet been validated on the final host.
 - Audio Studio currently generates speech through the fal Eleven v3 endpoint. Music, transcription and other visible future controls are disabled until their full workflows are implemented.
-- Explore seeds five private, editable starter workflows per invited account. Owners can publish or return templates to private. Three editable specialist profiles cover general health, skin and hair, and mental well-being.
+- Explore seeds five private, editable starter workflows per invited account. A workflow runs its chat, image, video and audio steps in order while the Explore page is open, passes private assets to later steps, and resumes saved jobs after a return to the page. Owners can publish or return templates to private. Three editable specialist profiles cover general health, skin and hair, and mental well-being.
+- Administrators can create and revoke one-time user or admin invitations in the `/admin` page; invitation links appear only once when created.
 
 Provider availability, price, account entitlement and output rights can change. The model registry exposes only request schemas we have mapped; additional models can be added without changing the stored job format. `docs/SEEDANCE_2_5.md` records that provider's current controls and estimate limits.
 

@@ -1,8 +1,9 @@
 import { getCurrentUser, mutationOriginAllowed } from "@/server/auth/access";
-import { createGenerationJob, listGenerationJobs, type JobKind } from "@/server/content/jobs";
+import { createGenerationJob, GenerationIdempotencyConflictError, listGenerationJobs, type JobKind } from "@/server/content/jobs";
 import { prepareMediaRequest, MediaRequestError } from "@/server/media/service";
 import type { JsonValue } from "@/server/content/types";
 import { publicJob } from "@/server/content/public-job";
+import { z } from "zod";
 
 export const runtime = "nodejs";
 
@@ -24,6 +25,10 @@ export async function POST(request: Request) {
   const current = await getCurrentUser(request.headers);
   if (!current) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
+  const idempotencyKey = request.headers.get("Idempotency-Key");
+  if (idempotencyKey !== null && !z.uuid().safeParse(idempotencyKey).success) {
+    return Response.json({ error: "Invalid request key." }, { status: 400 });
+  }
   let input: JsonValue;
   try {
     const raw = await request.text();
@@ -39,11 +44,15 @@ export async function POST(request: Request) {
       provider: prepared.provider,
       providerModel: prepared.modelId,
       payload: input,
+      idempotencyKey: idempotencyKey ?? undefined,
       costEstimateMicrosUsd: prepared.priceEstimate
         ? Math.max(0, Math.round(prepared.priceEstimate.amountUsd * 1_000_000)) : null
     });
     return Response.json({ job: publicJob(job), estimate: prepared.priceEstimate }, { status: 202 });
   } catch (error) {
+    if (error instanceof GenerationIdempotencyConflictError) {
+      return Response.json({ error: error.message }, { status: 409 });
+    }
     if (error instanceof MediaRequestError) {
       return Response.json({ error: error.message, fields: error.fields }, { status: 422 });
     }

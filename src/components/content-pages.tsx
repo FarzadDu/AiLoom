@@ -1,14 +1,38 @@
 "use client";
 
 import { ArrowRight, BookOpen, Check, Compass, Image as ImageIcon, MessageCircle, Plus, Stethoscope, Video, Volume2, X, type LucideIcon } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { responseError, type SessionUser } from "./chat-api";
 import { resolveTemplatePrompt, specialistsFromPayload, templateFromPayload, templatesFromPayload, type ExploreStep, type ExploreTemplate, type SpecialistProfile } from "./content-api";
 import { copy, modelOptions, specialistCatalog, type Locale, type View } from "./workspace-data";
+import { createWorkflowRun, executeWorkflow, restoreWorkflowRun, resumeWorkflowRun, validateWorkflowRun, type WorkflowAsset, type WorkflowRun } from "./explore-runner";
 
 const stepIcons: Record<ExploreStep["kind"], LucideIcon> = {
   chat: MessageCircle, image: ImageIcon, video: Video, audio: Volume2
 };
+
+const runCopy = {
+  en: {
+    runAll: "Run complete workflow", running: "Workflow running", done: "Workflow complete",
+    failed: "Workflow stopped on an error", stopped: "Sequence stopped",
+    queued: "Waiting", active: "Running", succeeded: "Complete", stepFailed: "Failed",
+    uploading: "Uploading references…", browserNote: "Keep Explore open while steps run. Returning to this page resumes a saved media job and continues the sequence.",
+    billingNote: "Media steps may use provider credits. Outputs stay private until you publish them.",
+    stop: "Stop after current task", resume: "Resume sequence", retry: "Retry failed step",
+    clear: "Dismiss run", openStep: "Open selected step in Studio", viewAsset: "Open output",
+    pendingJob: "A submitted provider job may continue even after stopping the sequence."
+  },
+  fa: {
+    runAll: "اجرای کامل گردش‌کار", running: "گردش‌کار در حال اجراست", done: "گردش‌کار کامل شد",
+    failed: "گردش‌کار به خطا خورد", stopped: "زنجیره متوقف شد",
+    queued: "در انتظار", active: "در حال اجرا", succeeded: "کامل شد", stepFailed: "خطا",
+    uploading: "در حال بارگذاری فایل‌ها…", browserNote: "تا پایان مراحل صفحهٔ کاوش را باز نگه دارید. با بازگشت به این صفحه، کار رسانه‌ای ذخیره‌شده پیگیری و مراحل بعدی ادامه پیدا می‌کنند.",
+    billingNote: "مراحل رسانه‌ای ممکن است اعتبار سرویس‌دهنده مصرف کنند. خروجی‌ها تا زمان انتشار خصوصی هستند.",
+    stop: "توقف زنجیره", resume: "ادامهٔ زنجیره", retry: "تلاش دوباره برای مرحلهٔ ناموفق",
+    clear: "بستن نتیجه", openStep: "بازکردن مرحله در استودیو", viewAsset: "بازکردن خروجی",
+    pendingJob: "کاری که به سرویس‌دهنده فرستاده شده ممکن است بعد از توقف زنجیره هم ادامه یابد."
+  }
+} as const;
 
 type TemplateDraft = {
   id: string | null;
@@ -49,6 +73,59 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
   const [inputFiles, setInputFiles] = useState<Record<string, File>>({});
   const [inputError, setInputError] = useState("");
+  const [activeRun, setActiveRun] = useState<WorkflowRun | null>(null);
+  const [runReady, setRunReady] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [jobState, setJobState] = useState<Record<string, string>>({});
+  const executionRef = useRef<AbortController | null>(null);
+  const latestRunRef = useRef<WorkflowRun | null>(null);
+  const rt = runCopy[locale];
+
+  const persistRun = useCallback((run: WorkflowRun | null) => {
+    latestRunRef.current = run;
+    setActiveRun(run);
+    if (!user?.id) return;
+    try {
+      const key = `ailoom.explore.run.v1.${user.id}`;
+      if (run) window.localStorage.setItem(key, JSON.stringify(run));
+      else window.localStorage.removeItem(key);
+    } catch { /* Workflow continues in memory when storage is unavailable. */ }
+  }, [user?.id]);
+
+  useEffect(() => {
+    executionRef.current?.abort();
+    executionRef.current = null;
+    setJobState({});
+    setRunReady(false);
+    if (!user?.id) { latestRunRef.current = null; setActiveRun(null); setRunReady(true); return; }
+    let restored: WorkflowRun | null = null;
+    try { restored = restoreWorkflowRun(window.localStorage.getItem(`ailoom.explore.run.v1.${user.id}`), user.id); }
+    catch { /* Storage may be disabled. */ }
+    latestRunRef.current = restored;
+    setActiveRun(restored);
+    setRunReady(true);
+    return () => { executionRef.current?.abort(); executionRef.current = null; };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!runReady || !activeRun || activeRun.status !== "running" || !user || executionRef.current) return;
+    const controller = new AbortController();
+    executionRef.current = controller;
+    void executeWorkflow(activeRun, {
+      signal: controller.signal,
+      onUpdate: persistRun,
+      onJobState: (stepId, state) => setJobState(previous => ({ ...previous, [stepId]: state }))
+    }).catch(error => {
+      if (controller.signal.aborted) return;
+      const latest = latestRunRef.current ?? activeRun;
+      persistRun({ ...latest, status: "failed", steps: latest.steps.map((step, index) =>
+        index === latest.steps.findIndex(item => item.state !== "succeeded")
+          ? { ...step, state: "failed", error: error instanceof Error ? error.message : "Workflow failed." } : step) });
+    }).finally(() => {
+      if (executionRef.current === controller) executionRef.current = null;
+    });
+    return () => { controller.abort(); if (executionRef.current === controller) executionRef.current = null; };
+  }, [activeRun?.id, activeRun?.status, runReady, user?.id, persistRun]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -94,6 +171,59 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
     if (resolved.hasUndefinedInput) { setInputError(t.workflowUndefinedInput); return; }
     setInputError("");
     onUse(selectedStep.kind, resolved.text, { file, modelId });
+  };
+
+  const runWorkflow = async () => {
+    if (!selected || uploading || activeRun?.status === "running") return;
+    if (!user) { onLogin(); return; }
+    const missing = selected.definition.inputs.find(input => input.required &&
+      (input.type === "text" ? !inputValues[input.key]?.trim() : !inputFiles[input.key]));
+    if (missing) {
+      setInputError(t.workflowRequired);
+      document.getElementById(`workflow-input-${missing.key}`)?.focus();
+      return;
+    }
+    setInputError("");
+    setUploading(true);
+    try {
+      const assets: Record<string, WorkflowAsset> = {};
+      for (const input of selected.definition.inputs) {
+        if (input.type === "text") continue;
+        const file = inputFiles[input.key];
+        if (!file) continue;
+        if (!file.size || file.size > 100_000_000) throw new Error("File size must be between 1 byte and 100 MB.");
+        const form = new FormData();
+        form.set("file", file);
+        const response = await fetch("/api/assets", { method: "POST", credentials: "same-origin", body: form });
+        if (!response.ok) throw new Error(await responseError(response));
+        const asset = (await response.json()).asset as { id?: unknown; kind?: unknown };
+        if (typeof asset?.id !== "string" || !/^[0-9a-f-]{36}$/i.test(asset.id) ||
+          !["image", "video", "audio", "file"].includes(String(asset.kind))) {
+          throw new Error("The uploaded file could not be linked to this workflow.");
+        }
+        if (input.type !== "file" && asset.kind !== input.type) {
+          throw new Error(`${input.label}: choose a ${input.type} file.`);
+        }
+        assets[input.key] = { id: asset.id, kind: asset.kind as WorkflowAsset["kind"], name: file.name };
+      }
+      const run = createWorkflowRun(selected, user.id, inputValues, assets);
+      validateWorkflowRun(run);
+      setJobState({});
+      persistRun(run);
+    } catch (error) {
+      setInputError(error instanceof Error ? error.message : t.workflowError);
+    } finally { setUploading(false); }
+  };
+
+  const stopWorkflow = () => {
+    if (!activeRun || activeRun.status !== "running") return;
+    executionRef.current?.abort();
+    persistRun({ ...activeRun, status: "stopped" });
+  };
+
+  const resumeWorkflow = () => {
+    if (!activeRun || activeRun.status === "running" || activeRun.status === "succeeded") return;
+    persistRun(resumeWorkflowRun(activeRun));
   };
 
   const saveTemplate = async (event: FormEvent<HTMLFormElement>) => {
@@ -144,9 +274,35 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
     <section className="browse-page" aria-labelledby="explore-title">
       <div className="workspace-heading"><div><span className="section-eyebrow">{t.exploreEyebrow}</span><h1 id="explore-title">{t.exploreTitle}</h1><p>{t.exploreDescription}</p></div><button className="outline-action" type="button" onClick={() => user ? (setDraft(newDraft()), setSaveError("")) : onLogin()}><Plus size={17} aria-hidden="true" />{t.createWorkflow}</button></div>
       {loadError && <div className="content-error" role="alert">{loadError}</div>}
+      {activeRun && <div className="workflow-run" aria-label={activeRun.template.title}>
+        <div className="workflow-run-heading"><div><span className="detail-kicker">{activeRun.template.title}</span><h2>{activeRun.status === "running" ? rt.running : activeRun.status === "succeeded" ? rt.done : activeRun.status === "failed" ? rt.failed : rt.stopped}</h2></div><span className="workflow-run-count">{activeRun.steps.filter(step => step.state === "succeeded").length} / {activeRun.steps.length}</span></div>
+        <p className="workflow-run-note">{rt.browserNote}</p>
+        <div className="workflow-run-steps">{activeRun.template.definition.steps.map((step, index) => {
+          const result = activeRun.steps[index];
+          const Icon = stepIcons[step.kind];
+          const label = result.state === "waiting" ? rt.queued : result.state === "running" ? jobState[step.id] || rt.active : result.state === "succeeded" ? rt.succeeded : rt.stepFailed;
+          return <div className={`workflow-run-step workflow-run-step-${result.state}`} key={step.id}>
+            <div className="workflow-run-step-head"><Icon size={17} aria-hidden="true" /><strong>{String(index + 1).padStart(2, "0")} · {step.title}{result.modelId && <small>{modelOptions[step.kind].find(option => option.id === result.modelId)?.label ?? result.modelId}</small>}</strong><span>{label}</span></div>
+            {result.error && <p className="content-error" role="alert">{result.error}</p>}
+            {result.text && <div className="workflow-run-text" dir="auto">{result.text}</div>}
+            {result.asset && <div className="workflow-run-media">
+              {result.asset.kind === "image" && <img src={`/api/assets/${encodeURIComponent(result.asset.id)}`} alt={step.title} />}
+              {result.asset.kind === "video" && <video src={`/api/assets/${encodeURIComponent(result.asset.id)}`} controls preload="metadata" aria-label={step.title} />}
+              {result.asset.kind === "audio" && <audio src={`/api/assets/${encodeURIComponent(result.asset.id)}`} controls preload="metadata" aria-label={step.title} />}
+              <a href={`/api/assets/${encodeURIComponent(result.asset.id)}`} target="_blank" rel="noopener noreferrer">{rt.viewAsset}<ArrowRight size={14} aria-hidden="true" /></a>
+            </div>}
+          </div>;
+        })}</div>
+        <div className="workflow-run-actions">
+          {activeRun.status === "running" && <button type="button" className="outline-action" onClick={stopWorkflow}>{rt.stop}</button>}
+          {(activeRun.status === "stopped" || activeRun.status === "failed") && <button type="button" className="primary-action" onClick={resumeWorkflow}>{activeRun.status === "failed" ? rt.retry : rt.resume}<ArrowRight size={16} aria-hidden="true" /></button>}
+          {activeRun.status !== "running" && <button type="button" className="outline-action" onClick={() => persistRun(null)}>{rt.clear}</button>}
+        </div>
+        {activeRun.status === "stopped" && activeRun.steps.some(step => step.jobId && step.state !== "succeeded") && <p className="workflow-run-note">{rt.pendingJob}</p>}
+      </div>}
       <div className="browse-layout">
         <div className="workflow-list" aria-label={t.exploreEyebrow}>
-          {!loaded && <p className="content-empty" role="status">{t.loadingConversations}</p>}
+          {!loaded && <p className="content-empty" role="status">{t.loadingWorkflows}</p>}
           {loaded && !templates.length && <p className="content-empty">{t.exploreEmpty}</p>}
           {templates.map(item => {
             const Icon = stepIcons[item.definition.steps[0].kind];
@@ -188,7 +344,9 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
             <div className="workflow-steps" role="group" aria-label={t.workflowChooseStep}>{selected.definition.steps.map((step, index) => <button className="workflow-step workflow-step-button" type="button" key={step.id} aria-pressed={selectedStep.id === step.id} onClick={() => setSelectedStepId(step.id)}><span>{String(index + 1).padStart(2, "0")}</span><strong>{step.title}</strong><ArrowRight size={16} aria-hidden="true" /></button>)}</div>
             <div className="step-prompt" dir="auto">{selectedStep.prompt}</div>
             {inputError && <p className="content-error" role="alert">{inputError}</p>}
-            <button className="primary-action" type="button" onClick={launchStep}>{t.workflowUseStep}<ArrowRight size={17} aria-hidden="true" /></button>
+            <p className="workflow-run-note">{rt.billingNote}</p>
+            <button className="primary-action" type="button" onClick={() => void runWorkflow()} disabled={uploading || activeRun?.status === "running"}>{uploading ? rt.uploading : rt.runAll}<ArrowRight size={17} aria-hidden="true" /></button>
+            <button className="outline-action workflow-open-step" type="button" onClick={launchStep}>{rt.openStep}<ArrowRight size={16} aria-hidden="true" /></button>
             {isOwner && <div className="owner-actions"><span>{t.workflowOwn} · {selected.visibility === "public" ? t.workflowPublic : t.workflowPrivate}</span><div><button type="button" disabled={saving} onClick={() => { setDraft(draftFromTemplate(selected)); setSaveError(""); }}>{t.workflowEdit}</button><button type="button" disabled={saving} onClick={() => void setVisibility(selected.visibility === "public" ? "private" : "public")}>{selected.visibility === "public" ? t.workflowUnpublish : t.workflowPublish}</button></div></div>}
             {saveError && <p className="content-error" role="alert">{saveError}</p>}
           </> : <div className="content-empty detail-empty"><Compass size={28} aria-hidden="true" /><p>{t.exploreEmpty}</p></div>}

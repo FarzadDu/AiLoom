@@ -9,6 +9,7 @@ import {
   ChevronDown,
   Clock3,
   Compass,
+  Download,
   FileText,
   Image as ImageIcon,
   Layers3,
@@ -17,6 +18,7 @@ import {
   Paperclip,
   Play,
   Plus,
+  RotateCw,
   Scissors,
   ShieldCheck,
   SlidersHorizontal,
@@ -32,7 +34,7 @@ import {
 import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type RefObject } from "react";
 import { conversationsFromPayload, messagesFromPayload, modelsFromPayload, readChatStream, responseError, sessionUserFromPayload, type ChatMessage, type ChatModel, type ConversationSummary, type SessionUser } from "./chat-api";
 import { ExplorePage as ConnectedExplorePage, SpecialistsPage as ConnectedSpecialistsPage } from "./content-pages";
-import { mediaAssetsFromJob, mediaJobFromPayload, mediaModelsFromPayload, type MediaAsset, type MediaJob, type MediaModel } from "./media-api";
+import { libraryPageFromPayload, mediaAssetsFromJob, mediaDownloadName, mediaJobFromPayload, mediaModelsFromPayload, type LibraryAsset, type MediaAsset, type MediaJob, type MediaModel } from "./media-api";
 import { copy, mediaViews, modelOptions, views, type Locale, type MediaView, type Theme, type View } from "./workspace-data";
 
 type Drafts = Record<View, string>;
@@ -144,6 +146,7 @@ function Header({ locale, theme, view, user, onLocale, onTheme, onNavigate, onLo
           {views.map(item => <button type="button" key={item} aria-current={view === item ? "page" : undefined} onClick={() => onNavigate(item)}>{t.nav[item]}</button>)}
         </nav>
         <div className="header-actions">
+          {user?.role === "admin" && <a className="sign-in admin-link" href="/admin">{t.admin}</a>}
           <div className="language-picker" role="group" aria-label={t.chooseLanguage}>
             <button type="button" aria-pressed={locale === "en"} onClick={() => onLocale("en")}>EN</button>
             <button type="button" aria-pressed={locale === "fa"} onClick={() => onLocale("fa")}>فا</button>
@@ -183,7 +186,7 @@ function ChatComposer({ locale, prompt, onPrompt, model, onModel, modelList, mod
       </div>
       <div className="composer-toolbar">
         <div className="toolbar-left">
-          <input ref={fileRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={event => { onAttach(event); event.currentTarget.value = ""; }} aria-label={t.attach} />
+          <input ref={fileRef} className="sr-only" type="file" accept={mode === "text" ? "image/png,image/jpeg,image/webp,application/pdf" : "image/png,image/jpeg,image/webp"} onChange={event => { onAttach(event); event.currentTarget.value = ""; }} aria-label={t.attach} />
           <button type="button" className="attach-button" onClick={() => fileRef.current?.click()} aria-label={t.attach}><Plus size={20} /></button>
           <button type="button" className="chat-image-mode" aria-label={mode === "image" ? t.chatTextModeHint : t.chatImageModeHint} aria-pressed={mode === "image"} title={mode === "image" ? t.chatTextModeHint : t.chatImageModeHint} disabled={disabled} onClick={() => onMode(mode === "image" ? "text" : "image")}><ImageIcon size={18} aria-hidden="true" /><span>{t.chatImageMode}</span></button>
           {mode === "text" && <button type="button" className="chat-web-mode" aria-label={attachment ? t.webSearchNoImage : t.webSearchHint} aria-pressed={webSearch} title={attachment ? t.webSearchNoImage : t.webSearchHint} disabled={disabled || Boolean(attachment)} onClick={() => onWebSearch(!webSearch)}><Compass size={18} aria-hidden="true" /><span>{t.webSearch}</span></button>}
@@ -306,9 +309,12 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId
   );
 }
 
-function GeneratedResult({ asset, locale }: { asset: MediaAsset; locale: Locale }) {
+function GeneratedResult({ asset, locale, initialVisibility, onVisibilityChange }: {
+  asset: MediaAsset; locale: Locale; initialVisibility?: "public" | "private";
+  onVisibilityChange?: (visibility: "public" | "private") => void;
+}) {
   const t = copy[locale];
-  const [visibility, setVisibility] = useState<"public" | "private" | null>(null);
+  const [visibility, setVisibility] = useState<"public" | "private" | null>(initialVisibility ?? null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
@@ -340,23 +346,25 @@ function GeneratedResult({ asset, locale }: { asset: MediaAsset; locale: Locale 
       const body = await response.json();
       if (body?.visibility !== next) throw new Error(t.assetVisibilityError);
       setVisibility(next);
+      onVisibilityChange?.(next);
     } catch (reason) { setError(reason instanceof Error ? reason.message : t.assetVisibilityError); }
     finally { setSaving(false); }
   };
   return <div className="generated-result">
     {asset.kind === "image" ? <img src={asset.url} alt={t.imageOutput} /> : asset.kind === "video" ? <video src={asset.url} controls /> : asset.kind === "audio" ? <audio src={asset.url} controls /> : null}
     <div className="result-actions"><a href={asset.url} target="_blank" rel="noreferrer">{t.openResult}<ArrowRight size={15} aria-hidden="true" /></a>
+      {asset.id && <a href={asset.url} download={mediaDownloadName(asset)}><Download size={15} aria-hidden="true" />{t.downloadResult}</a>}
       {asset.id && <div className="asset-visibility"><span role="status"><ShieldCheck size={15} aria-hidden="true" />{visibility === null ? error ? t.assetVisibilityUnavailable : t.assetVisibilityLoading : visibility === "public" ? t.assetPublic : t.assetPrivate}</span>{visibility !== null ? <button type="button" disabled={saving} onClick={() => void changeVisibility()}>{saving ? t.assetVisibilitySaving : visibility === "public" ? t.makePrivate : t.makePublic}</button> : error && <button type="button" onClick={() => setRefreshKey(previous => previous + 1)}>{t.retry}</button>}</div>}
     </div>
     {error && <p className="result-error" role="alert">{error}</p>}
   </div>;
 }
 
-function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, preview, onFile, onRemoveFile, availableModels, job, jobError, busy, initialMode }: {
+function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, preview, onFile, onRemoveFile, availableModels, job, jobError, busy, initialMode, signedIn }: {
   view: MediaView; locale: Locale; model: string; onModel: (value: string) => void;
   draft: string; onDraft: (value: string) => void; onSubmit: (options: StudioRequestOptions) => void;
   preview: LocalFile | null; onFile: (event: ChangeEvent<HTMLInputElement>) => void; onRemoveFile: () => void;
-  availableModels: MediaModel[]; job: MediaJob | null; jobError: string; busy: boolean; initialMode: number;
+  availableModels: MediaModel[]; job: MediaJob | null; jobError: string; busy: boolean; initialMode: number; signedIn: boolean;
 }) {
   const t = copy[locale];
   const [activeMode, setActiveMode] = useState(initialMode);
@@ -368,6 +376,16 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   const [clipDuration, setClipDuration] = useState(30);
   const [repairStart, setRepairStart] = useState(10);
   const [repairEnd, setRepairEnd] = useState(12);
+  const [library, setLibrary] = useState<LibraryAsset[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryError, setLibraryError] = useState("");
+  const [libraryCursor, setLibraryCursor] = useState<string | null>(null);
+  const [libraryMoreLoading, setLibraryMoreLoading] = useState(false);
+  const [libraryMoreError, setLibraryMoreError] = useState("");
+  const [libraryRefresh, setLibraryRefresh] = useState(0);
+  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const libraryMoreController = useRef<AbortController | null>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const CurrentIcon = navIcons[view];
@@ -384,6 +402,66 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   const selectModels = relevantModels.length ? relevantModels : fallbackModels.map(item => ({ id: item.id, name: item.label }));
   const effectiveModel = selectModels.some(item => item.id === model) ? model : selectModels[0]?.id || model;
   const outputAssets = mediaAssetsFromJob(job);
+  const selectedAsset = library.find(asset => asset.id === selectedAssetId);
+  const shownAssets: MediaAsset[] = selectedAsset ? [{ id: selectedAsset.id, kind: selectedAsset.kind,
+    url: selectedAsset.url, contentType: selectedAsset.mimeType }] : outputAssets;
+  const completedJobId = job?.state === "succeeded" ? job.id : "";
+  useEffect(() => { setSelectedAssetId(null); }, [job?.id]);
+  useEffect(() => {
+    libraryMoreController.current?.abort();
+    libraryMoreController.current = null;
+    setLibraryMoreLoading(false);
+    setLibraryMoreError("");
+    setLibraryCursor(null);
+    if (!signedIn) { setLibrary([]); setLibraryLoading(false); setLibraryError(""); return; }
+    const controller = new AbortController();
+    setLibraryLoading(true);
+    setLibraryError("");
+    fetch(`/api/assets?kind=${view}&source=generation&limit=24`, { credentials: "same-origin", cache: "no-store", signal: controller.signal })
+      .then(async response => { if (!response.ok) throw new Error(await responseError(response)); return response.json(); })
+      .then(body => { if (!controller.signal.aborted) {
+        const page = libraryPageFromPayload(body, view);
+        setLibrary(page.assets);
+        setLibraryCursor(page.nextCursor);
+      } })
+      .catch(error => { if (!controller.signal.aborted) setLibraryError(error instanceof Error ? error.message : t.mediaLibraryError); })
+      .finally(() => { if (!controller.signal.aborted) setLibraryLoading(false); });
+    return () => { controller.abort(); libraryMoreController.current?.abort(); };
+  }, [signedIn, view, completedJobId, libraryRefresh, t.mediaLibraryError]);
+  const loadMoreLibrary = async () => {
+    if (!signedIn || !libraryCursor || libraryLoading || libraryMoreLoading || libraryMoreController.current) return;
+    const controller = new AbortController();
+    libraryMoreController.current = controller;
+    setLibraryMoreLoading(true);
+    setLibraryMoreError("");
+    try {
+      const response = await fetch(`/api/assets?kind=${view}&source=generation&limit=24&cursor=${encodeURIComponent(libraryCursor)}`,
+        { credentials: "same-origin", cache: "no-store", signal: controller.signal });
+      if (!response.ok) throw new Error(await responseError(response));
+      const page = libraryPageFromPayload(await response.json(), view);
+      if (controller.signal.aborted) return;
+      setLibrary(previous => {
+        const seen = new Set(previous.map(item => item.id));
+        return [...previous, ...page.assets.filter(item => !seen.has(item.id))];
+      });
+      setLibraryCursor(page.nextCursor);
+    } catch (error) {
+      if (!controller.signal.aborted) setLibraryMoreError(error instanceof Error ? error.message : t.mediaLibraryError);
+    } finally {
+      if (libraryMoreController.current === controller) libraryMoreController.current = null;
+      if (!controller.signal.aborted) setLibraryMoreLoading(false);
+    }
+  };
+  const onVisibilityChange = (assetId: string, visibility: "private" | "public") => {
+    setLibrary(previous => previous.map(asset => asset.id === assetId ? { ...asset, visibility } : asset));
+  };
+  const openLibraryAsset = (id: string) => {
+    setSelectedAssetId(current => current === id ? null : id);
+    window.requestAnimationFrame(() => canvasRef.current?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "start"
+    }));
+  };
   const accept = view === "image" || view === "video" && activeMode === 1 ? "image/png,image/jpeg,image/webp" : view === "video" ? "video/mp4,video/webm" : "";
   const showRepair = view === "video" && activeMode === 2;
   const needsReference = view === "image" && activeMode === 1 || view === "video" && (activeMode === 1 || activeMode === 2);
@@ -405,11 +483,12 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
       <div className="workspace-heading"><div><span className="section-eyebrow">{t.studioEyebrow}</span><h1 id="studio-title">{t.studioTitle[view]}</h1><p>{t.studioDescription[view]}</p></div><span className="page-indicator"><CurrentIcon size={18} aria-hidden="true" />{t.nav[view]}</span></div>
       <div className="studio-tabs" role="group" aria-label={t.studioTitle[view]}>{tabs.map((name, index) => <button type="button" key={name} aria-pressed={activeMode === index} disabled={view === "image" && index === 2 || view === "audio" && index !== 0} onClick={() => { if (index !== activeMode) { setActiveMode(index); onRemoveFile(); } }}>{name}</button>)}</div>
       <div className="studio-layout">
-        <div className="canvas-column">
-          <div className="canvas-top"><strong>{t.canvas}</strong><span>{preview ? t.localPreview : t.canvasReady}</span></div>
+        <div className="canvas-column" ref={canvasRef}>
+          <div className="canvas-top"><strong>{t.canvas}</strong>{selectedAsset ? <button type="button" className="canvas-return" onClick={() => setSelectedAssetId(null)}>{t.mediaLibraryBack}</button> : <span>{preview ? t.localPreview : t.canvasReady}</span>}</div>
           <div className={`studio-canvas studio-canvas-${view}`}>
-            {preview ? ((view === "image" || view === "video" && activeMode === 1) && preview.mime.startsWith("image/") ? <img className="uploaded-media" src={preview.url} alt={preview.name} /> : view === "video" && preview.mime.startsWith("video/") ? <video className="uploaded-media" src={preview.url} controls onLoadedMetadata={event => handleMetadata(event.currentTarget.duration)} /> : null)
-              : job?.state === "succeeded" && outputAssets.length ? <div className="generated-results">{outputAssets.map((asset, index) => <GeneratedResult asset={asset} locale={locale} key={asset.id ?? asset.url + index} />)}</div>
+            {selectedAsset ? <div className="generated-results"><GeneratedResult key={selectedAsset.id} asset={shownAssets[0]} locale={locale} initialVisibility={selectedAsset.visibility} onVisibilityChange={visibility => onVisibilityChange(selectedAsset.id, visibility)} /></div>
+              : preview ? ((view === "image" || view === "video" && activeMode === 1) && preview.mime.startsWith("image/") ? <img className="uploaded-media" src={preview.url} alt={preview.name} /> : view === "video" && preview.mime.startsWith("video/") ? <video className="uploaded-media" src={preview.url} controls onLoadedMetadata={event => handleMetadata(event.currentTarget.duration)} /> : null)
+              : job?.state === "succeeded" && shownAssets.length ? <div className="generated-results">{shownAssets.map((asset, index) => <GeneratedResult asset={asset} locale={locale} onVisibilityChange={asset.id ? visibility => onVisibilityChange(asset.id!, visibility) : undefined} key={asset.id ?? asset.url + index} />)}</div>
               : job?.state === "succeeded" ? <div className="job-status"><Check size={27} aria-hidden="true" /><strong>{t.generationDone}</strong><p>{t.generationOutputMissing}</p></div>
               : job && ["queued", "submitting", "running"].includes(job.state) ? <div className="job-status"><span className="job-spinner" aria-hidden="true" /><strong>{job.state === "running" ? t.generationRunning : t.generationQueued}</strong><p>{t.generationHint}</p></div>
               : job?.state === "failed" ? <div className="job-status"><X size={27} aria-hidden="true" /><strong>{t.generationFailed}</strong><p>{job.errorCode || jobError}</p></div>
@@ -442,6 +521,26 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
             {(view === "image" && activeMode === 2 || view === "audio" && activeMode !== 0) && <p className="inspector-note">{t.unsupportedOperation}</p>}
         </aside>
       </div>
+      {signedIn && <section className="media-library" aria-labelledby="media-library-title">
+        <div className="media-library-heading"><div><span className="section-eyebrow">{t.mediaLibraryEyebrow}</span><h2 id="media-library-title">{t.mediaLibraryTitle}</h2><p>{t.mediaLibraryDescription}</p></div><button type="button" className="media-library-refresh" onClick={() => setLibraryRefresh(value => value + 1)} disabled={libraryLoading || libraryMoreLoading}><RotateCw size={16} aria-hidden="true" />{t.mediaLibraryRefresh}</button></div>
+        {libraryError && <div className="media-library-notice" role="alert"><span>{libraryError}</span><button type="button" onClick={() => setLibraryRefresh(value => value + 1)}>{t.retry}</button></div>}
+        {libraryLoading && !library.length ? <p className="media-library-empty" role="status">{t.mediaLibraryLoading}</p>
+          : !library.length && !libraryError ? <p className="media-library-empty">{t.mediaLibraryEmpty}</p>
+          : <div className="media-library-grid">{library.map(asset => {
+            const label = asset.kind === "image" ? t.imageOutput : asset.kind === "video" ? t.videoOutput : t.audioOutput;
+            const created = Date.parse(asset.createdAt);
+            const dateLabel = Number.isFinite(created) ? new Intl.DateTimeFormat(locale === "fa" ? "fa-IR" : "en-US", { dateStyle: "medium", timeStyle: "short" }).format(created) : "";
+            return <div className="media-library-card" key={asset.id}>
+              <button type="button" className="media-library-open" aria-pressed={selectedAssetId === asset.id} aria-label={`${t.openResult}: ${label}${dateLabel ? `, ${dateLabel}` : ""}`} onClick={() => openLibraryAsset(asset.id)}>
+                <span className="media-library-thumb">{asset.kind === "image" ? <img src={asset.url} alt="" loading="lazy" /> : asset.kind === "video" ? <Video size={30} aria-hidden="true" /> : <AudioLines size={30} aria-hidden="true" />}</span>
+                <span className="media-library-details"><strong>{label}</strong><small>{dateLabel}</small><span className="media-library-visibility"><ShieldCheck size={13} aria-hidden="true" />{asset.visibility === "public" ? t.assetPublic : t.assetPrivate}</span></span>
+              </button>
+              <a className="media-library-download" href={asset.url} download={mediaDownloadName({ id: asset.id, kind: asset.kind, contentType: asset.mimeType })} aria-label={`${t.downloadResult}: ${label}`} title={t.downloadResult}><Download size={18} aria-hidden="true" /></a>
+            </div>;
+          })}</div>}
+        {libraryMoreError && <div className="media-library-notice" role="alert"><span>{libraryMoreError}</span><button type="button" onClick={() => void loadMoreLibrary()}>{t.retry}</button></div>}
+        {libraryCursor && <div className="media-library-more"><button type="button" className="outline-action" onClick={() => void loadMoreLibrary()} disabled={libraryLoading || libraryMoreLoading}>{libraryMoreLoading ? t.mediaLibraryLoadingMore : t.mediaLibraryLoadMore}</button></div>}
+      </section>}
     </section>
   );
 }
@@ -532,6 +631,7 @@ export default function WorkspaceApp() {
   const [mediaJobs, setMediaJobs] = useState<Partial<Record<MediaView, MediaJob>>>({});
   const [mediaErrors, setMediaErrors] = useState<Partial<Record<MediaView, string>>>({});
   const [mediaSubmitting, setMediaSubmitting] = useState<Partial<Record<MediaView, boolean>>>({});
+  const mediaSubmittingRef = useRef<Partial<Record<MediaView, boolean>>>({});
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -866,8 +966,8 @@ export default function WorkspaceApp() {
     const message = drafts.chat.trim();
     if (!message && !attachment) { promptRef.current?.focus(); return; }
     if (!user) { openLogin(message || attachment?.name || ""); return; }
-    if (attachment && (!["image/png", "image/jpeg", "image/webp"].includes(attachment.mime) || !attachment.file || attachment.file.size > 10_000_000)) {
-      setChatError(t.chatImageOnly);
+    if (attachment && (!["image/png", "image/jpeg", "image/webp", "application/pdf"].includes(attachment.mime) || !attachment.file || attachment.file.size > 10_000_000)) {
+      setChatError(t.chatAttachmentUnsupported);
       return;
     }
     if (webSearch && attachment) { setChatError(t.webSearchNoImage); return; }
@@ -878,7 +978,7 @@ export default function WorkspaceApp() {
     pendingRef.current = true;
     setChatPending(true);
     setChatError("");
-    setMessages(previous => [...previous, { id: userId, role: "user", text: message, blocks: attachment ? [{ type: "image", url: attachment.url, alt: attachment.name }] : [] }, { id: assistantId, role: "assistant", text: "", status: "streaming" }]);
+    setMessages(previous => [...previous, { id: userId, role: "user", text: message, blocks: attachment ? [{ type: attachment.mime === "application/pdf" ? "file" : "image", url: attachment.url, alt: attachment.name }] : [] }, { id: assistantId, role: "assistant", text: "", status: "streaming" }]);
     try {
       let assetId = attachment?.assetId;
       if (attachment && !assetId) {
@@ -912,7 +1012,7 @@ export default function WorkspaceApp() {
         if (event.type === "done") setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, id: event.messageId || assistantId, status: undefined } : item));
       });
       updateDraft("chat", "");
-      if (assetId) setMessages(previous => previous.map(item => item.id === userId ? { ...item, blocks: [{ type: "image", assetId, alt: attachment?.name }] } : item));
+      if (assetId) setMessages(previous => previous.map(item => item.id === userId ? { ...item, blocks: [{ type: attachment?.mime === "application/pdf" ? "file" : "image", assetId, alt: attachment?.name }] } : item));
       setAttachment(null);
       setSpecialistId(null);
       void refreshConversations();
@@ -923,6 +1023,11 @@ export default function WorkspaceApp() {
       pendingRef.current = false;
       setChatPending(false);
     }
+  };
+
+  const changeChatMode = (mode: "text" | "image") => {
+    setChatMode(mode);
+    if (mode === "image" && attachment?.mime === "application/pdf") setAttachment(null);
   };
 
   const authenticate = async (input: { mode: "sign-in" | "sign-up"; email: string; password: string; name: string }) => {
@@ -959,6 +1064,8 @@ export default function WorkspaceApp() {
     try {
       const response = await fetch("/api/auth/sign-out", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" });
       if (!response.ok) throw new Error(await responseError(response));
+      try { if (user) window.localStorage.removeItem(`ailoom.explore.run.v1.${user.id}`); }
+      catch { /* Private browsing can disable storage. */ }
       setUser(null);
       setSelectedConversationId(null);
       setMessages([]);
@@ -1024,6 +1131,8 @@ export default function WorkspaceApp() {
       payload = { modelId: options.modelId, operation: "text_to_speech", text: prompt };
       if (options.language === "en" || options.language === "fa") payload.languageCode = options.language;
     }
+    if (mediaSubmittingRef.current[target]) return;
+    mediaSubmittingRef.current[target] = true;
     setMediaSubmitting(previous => ({ ...previous, [target]: true }));
     setMediaErrors(previous => ({ ...previous, [target]: "" }));
     try {
@@ -1083,6 +1192,7 @@ export default function WorkspaceApp() {
     } catch (error) {
       setMediaErrors(previous => ({ ...previous, [target]: error instanceof Error ? error.message : t.generationFailed }));
     } finally {
+      mediaSubmittingRef.current[target] = false;
       setMediaSubmitting(previous => ({ ...previous, [target]: false }));
     }
   };
@@ -1092,9 +1202,9 @@ export default function WorkspaceApp() {
       <Header locale={locale} theme={theme} view={view} user={user} onLocale={setLocale} onTheme={() => setTheme(current => current === "light" ? "dark" : "light")} onNavigate={navigate} onLogin={() => openLogin()} onSignOut={() => void signOut()} />
       <main id="main-content">
         {view === "chat" && (user
-          ? <ChatWorkspace locale={locale} user={user} conversations={conversations} historyLoading={historyLoading} selectedId={selectedConversationId} messages={messages} messageLoading={messagesLoading} pending={chatPending} error={chatError} prompt={drafts.chat} onPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} onModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={setChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSend={() => void sendChat()} onSelect={id => void selectConversation(id)} onNew={newConversation} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />
-          : <ChatLanding locale={locale} prompt={drafts.chat} setPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} setModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={setChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSubmit={() => void sendChat()} onNavigate={navigate} onStarter={useWorkflow} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />)}
-        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} availableModels={mediaModels.filter(item => item.outputKind === view && (view !== "video" || ["fal-ai/veo3.1/fast", "fal-ai/veo3.1/fast/image-to-video", "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/reference-to-video", "fal-ai/ltx-2.3-quality/inpaint"].includes(item.id)))} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} />}
+          ? <ChatWorkspace locale={locale} user={user} conversations={conversations} historyLoading={historyLoading} selectedId={selectedConversationId} messages={messages} messageLoading={messagesLoading} pending={chatPending} error={chatError} prompt={drafts.chat} onPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} onModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSend={() => void sendChat()} onSelect={id => void selectConversation(id)} onNew={newConversation} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />
+          : <ChatLanding locale={locale} prompt={drafts.chat} setPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} setModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSubmit={() => void sendChat()} onNavigate={navigate} onStarter={useWorkflow} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />)}
+        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} availableModels={mediaModels.filter(item => item.outputKind === view && (view !== "video" || ["fal-ai/veo3.1/fast", "fal-ai/veo3.1/fast/image-to-video", "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/reference-to-video", "fal-ai/ltx-2.3-quality/inpaint"].includes(item.id)))} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} />}
         {view === "explore" && <ConnectedExplorePage locale={locale} user={user} onUse={useWorkflow} onLogin={() => openLogin()} />}
         {view === "specialists" && <ConnectedSpecialistsPage locale={locale} onAsk={askSpecialist} />}
       </main>

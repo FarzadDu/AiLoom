@@ -4,12 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, test } from "node:test";
+import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 
 const directory = mkdtempSync(join(tmpdir(), "ailoom-content-test-"));
 process.env.DATABASE_PATH = join(directory, "test.sqlite");
 const { getDb, getSqlite } = await import("../src/server/db");
-const { user } = await import("../src/server/db/schema");
+const { asset: assetTable, user } = await import("../src/server/db/schema");
 const chat = await import("../src/server/content/chat");
 const assets = await import("../src/server/content/assets");
 const jobs = await import("../src/server/content/jobs");
@@ -80,6 +81,39 @@ test("assets begin private and reject foreign ownership or path traversal", () =
   }));
 });
 
+test("asset cursor pages preserve owner scope and order as newer outputs arrive", () => {
+  const create = (ownerId: string, kind: "image" | "video", source: "generation" | "upload") =>
+    assets.createAsset(ownerId, { kind, source, mimeType: kind === "video" ? "video/mp4" : "image/png",
+      sizeBytes: 12, storageKey: `uploads/${randomUUID()}.${kind === "video" ? "mp4" : "png"}` });
+  const dates = ["2026-01-03", "2026-01-03", "2026-01-02", "2026-01-02", "2026-01-01"];
+  const generated = dates.map(date => {
+    const item = create(alice, "image", "generation");
+    getDb().update(assetTable).set({ createdAt: new Date(`${date}T00:00:00.000Z`) })
+      .where(eq(assetTable.id, item.id)).run();
+    return { id: item.id, date };
+  });
+  const uploaded = create(alice, "image", "upload");
+  const video = create(alice, "video", "generation");
+  const foreign = create(bob, "image", "generation");
+  assets.setAssetVisibility(bob, foreign.id, "public");
+  const expected = [...generated].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id)).map(item => item.id);
+
+  const first = assets.listAssetsPage(alice, { kind: "image", source: "generation", limit: 2 });
+  assert.deepEqual(first.assets.map(item => item.id), expected.slice(0, 2));
+  assert.ok(first.nextCursor);
+  const newer = create(alice, "image", "generation");
+  const second = assets.listAssetsPage(alice, { kind: "image", source: "generation", limit: 2,
+    cursor: assets.parseAssetCursor(first.nextCursor) });
+  const third = assets.listAssetsPage(alice, { kind: "image", source: "generation", limit: 2,
+    cursor: assets.parseAssetCursor(second.nextCursor) });
+  assert.deepEqual([...first.assets, ...second.assets, ...third.assets].map(item => item.id), expected);
+  assert.equal(third.nextCursor, null);
+  assert.equal(assets.listAssetsPage(alice, { kind: "image", source: "generation", limit: 2 }).assets[0].id, newer.id);
+  assert.ok(!expected.includes(uploaded.id) && !expected.includes(video.id) && !expected.includes(foreign.id));
+  assert.deepEqual(assets.listAssetsPage(bob, { kind: "image", source: "generation", limit: 2 }).assets.map(item => item.id), [foreign.id]);
+  assert.throws(() => assets.parseAssetCursor("not-a-cursor"));
+});
+
 test("projects cannot be attached to another user's conversation or job", () => {
   const project = projects.createProject(alice, { name: "Private launch" });
   assert.equal(projects.getProject(bob, project.id), null);
@@ -103,6 +137,45 @@ test("jobs are owner-scoped and enforce a durable state sequence", () => {
   assert.equal(jobs.transitionGenerationJob(alice, job.id, { state: "succeeded", output: { assetIds: [] } })?.state, "succeeded");
   assert.deepEqual(jobs.getGenerationJob(alice, job.id)?.output, { assetIds: [] });
   assert.throws(() => jobs.transitionGenerationJob(alice, job.id, { state: "running" }));
+});
+
+test("a repeated paid request key returns one owned job and rejects changed or foreign requests", () => {
+  const key = randomUUID();
+  const request = { kind: "image" as const, provider: "fal", providerModel: "fal-ai/flux-2-pro",
+    payload: { modelId: "fal-ai/flux-2-pro", operation: "text_to_image", prompt: "A blue kite" } };
+  const first = jobs.createGenerationJob(alice, { ...request, idempotencyKey: key });
+  const count = jobs.listGenerationJobs(alice, { limit: 200 }).length;
+  assert.equal(first.id, key);
+  assert.equal(jobs.createGenerationJob(alice, { ...request, idempotencyKey: key }).id, first.id);
+  assert.equal(jobs.listGenerationJobs(alice, { limit: 200 }).length, count);
+  assert.equal(jobs.claimNextQueuedJob()?.id, key);
+  assert.equal(jobs.createGenerationJob(alice, { ...request, idempotencyKey: key }).state, "submitting");
+  assert.throws(() => jobs.createGenerationJob(alice, { ...request,
+    payload: { ...request.payload, prompt: "A red kite" }, idempotencyKey: key
+  }), jobs.GenerationIdempotencyConflictError);
+  assert.throws(() => jobs.createGenerationJob(bob, { ...request, idempotencyKey: key }),
+    jobs.GenerationIdempotencyConflictError);
+});
+
+test("a renewed signed private reference resolves to the original paid job", () => {
+  const previousBase = process.env.PUBLIC_BASE_URL;
+  process.env.PUBLIC_BASE_URL = "https://ailoom.example.test";
+  try {
+    const key = randomUUID();
+    const assetId = randomUUID();
+    const input = (expires: number, token: string, referenceId = assetId) => ({
+      kind: "edit" as const, provider: "fal", providerModel: "fal-ai/qwen-image-edit", idempotencyKey: key,
+      payload: { modelId: "fal-ai/qwen-image-edit", operation: "image_edit", prompt: "Change the backdrop",
+        imageUrl: `https://ailoom.example.test/api/assets/${referenceId}?expires=${expires}&token=${token}` }
+    });
+    const first = jobs.createGenerationJob(alice, input(1_790_000_000, "first"));
+    assert.equal(jobs.createGenerationJob(alice, input(1_790_003_600, "second")).id, first.id);
+    assert.throws(() => jobs.createGenerationJob(alice, input(1_790_003_600, "second", randomUUID())),
+      jobs.GenerationIdempotencyConflictError);
+  } finally {
+    if (previousBase === undefined) delete process.env.PUBLIC_BASE_URL;
+    else process.env.PUBLIC_BASE_URL = previousBase;
+  }
 });
 
 test("Explore templates only become public through an owner action", () => {

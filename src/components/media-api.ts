@@ -8,6 +8,15 @@ export type MediaModel = {
 };
 
 export type MediaAsset = { id?: string; kind: string; url: string; contentType?: string | null };
+export type LibraryAsset = {
+  id: string;
+  kind: "image" | "video" | "audio";
+  url: string;
+  visibility: "private" | "public";
+  mimeType: string;
+  originalName: string | null;
+  createdAt: string;
+};
 export type MediaJob = {
   id: string;
   state: "queued" | "submitting" | "running" | "succeeded" | "failed" | "cancelled";
@@ -63,7 +72,43 @@ export function mediaAssetsFromJob(job: MediaJob | null): MediaAsset[] {
     if (typeof url !== "string" || !(/^https:\/\//i.test(url) || /^\/api\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(url))) continue;
     const id = typeof item?.id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.id)
       ? item.id : /^\/api\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(url)?.[1];
-    assets.push({ id, kind: typeof item?.kind === "string" ? item.kind : "file", url, contentType: typeof item?.contentType === "string" ? item.contentType : null });
+    assets.push({ id, kind: typeof item?.kind === "string" ? item.kind : "file", url,
+      contentType: typeof item?.mimeType === "string" ? item.mimeType : typeof item?.contentType === "string" ? item.contentType : null });
   }
   return assets;
+}
+
+export function libraryAssetsFromPayload(payload: unknown, kind: LibraryAsset["kind"]): LibraryAsset[] {
+  const candidates = record(payload)?.assets;
+  if (!Array.isArray(candidates)) return [];
+  const assets: LibraryAsset[] = [];
+  for (const candidate of candidates) {
+    const item = record(candidate);
+    if (!item || item.kind !== kind || item.source !== "generation" ||
+      typeof item.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.id) ||
+      (item.visibility !== "private" && item.visibility !== "public")) continue;
+    assets.push({ id: item.id, kind, url: `/api/assets/${item.id}`, visibility: item.visibility,
+      mimeType: typeof item.mimeType === "string" ? item.mimeType : "",
+      originalName: typeof item.originalName === "string" ? item.originalName : null,
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : "" });
+  }
+  return assets;
+}
+
+export function libraryPageFromPayload(payload: unknown, kind: LibraryAsset["kind"]): {
+  assets: LibraryAsset[]; nextCursor: string | null;
+} {
+  const next = record(payload)?.nextCursor;
+  return { assets: libraryAssetsFromPayload(payload, kind),
+    nextCursor: typeof next === "string" && /^[A-Za-z0-9_-]{1,160}$/.test(next) ? next : null };
+}
+
+export function mediaDownloadName(asset: Pick<MediaAsset, "id" | "kind" | "contentType">): string {
+  const extension = asset.contentType === "image/jpeg" ? "jpg" : asset.contentType === "image/webp" ? "webp"
+    : asset.contentType === "image/gif" ? "gif"
+    : asset.contentType === "video/webm" ? "webm" : asset.contentType === "audio/mpeg" ? "mp3"
+    : asset.contentType === "audio/wav" || asset.contentType === "audio/x-wav" ? "wav"
+    : asset.contentType === "audio/ogg" ? "ogg"
+    : asset.kind === "video" ? "mp4" : asset.kind === "audio" ? "mp3" : "png";
+  return `ailoom-${asset.kind}-${asset.id?.slice(0, 8) || "output"}.${extension}`;
 }
