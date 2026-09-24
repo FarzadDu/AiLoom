@@ -34,7 +34,7 @@ export function detectMediaMime(bytes: Buffer, expectedKind: "image" | "video" |
 }
 
 export function mediaRoot(): string {
-  return resolve(process.env.MEDIA_DIR?.trim() || "data/media");
+  return resolve(/* turbopackIgnore: true */ process.env.MEDIA_DIR?.trim() || "data/media");
 }
 
 export function mediaPath(storageKey: string): string {
@@ -65,7 +65,7 @@ export async function deletePrivateFile(storageKey: string) {
 
 export async function privateFileResponse(storageKey: string, mimeType: string, rangeHeader: string | null, downloadName?: string | null): Promise<Response> {
   const path = mediaPath(storageKey);
-  const info = await stat(path);
+  const info = await stat(/* turbopackIgnore: true */ path);
   const total = info.size;
   if (!Number.isSafeInteger(total) || total < 0) throw new Error("Invalid private file.");
   let start = 0;
@@ -92,6 +92,6 @@ export async function privateFileResponse(storageKey: string, mimeType: string, 
       ? `attachment; filename="${(downloadName || "download").replace(/[\\"\r\n]/g, "_")}"` : "inline"
   });
   if (status === 206) headers.set("Content-Range", `bytes ${start}-${end}/${total}`);
-  const body = Readable.toWeb(createReadStream(path, { start, end })) as ReadableStream<Uint8Array>;
+  const body = Readable.toWeb(createReadStream(/* turbopackIgnore: true */ path, { start, end })) as ReadableStream<Uint8Array>;
   return new Response(body, { status, headers });
 }

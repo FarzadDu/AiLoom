@@ -8,7 +8,7 @@ let sqlite: SQLite.Database | undefined;
 let db: ReturnType<typeof drizzle<typeof schema>> | undefined;
 
 export function databasePath(): string {
-  return resolve(process.env.DATABASE_PATH?.trim() || "data/ailoom.sqlite");
+  return resolve(/* turbopackIgnore: true */ process.env.DATABASE_PATH?.trim() || "data/ailoom.sqlite");
 }
 
 export function getSqlite(): SQLite.Database {
