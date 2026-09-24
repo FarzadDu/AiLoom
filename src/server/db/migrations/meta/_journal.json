@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1790278329288,
+      "tag": "0000_classy_matthew_murdock",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1790278967230,
+      "tag": "0001_peaceful_vector",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790279261431,
+      "tag": "0002_equal_starhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1790281501472,
+      "tag": "0003_slow_crystal",
+      "breakpoints": true
+    }
+  ]
+}

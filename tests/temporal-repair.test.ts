@@ -1,0 +1,263 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { test } from "node:test";
+import { prepareTemporalRepair, spliceTemporalRepair } from "../src/server/media/temporal-repair";
+
+type CommandCall = { executable: string; args: readonly string[] };
+type ProbeKind = "source" | "context" | "mask" | "repaired" | "output";
+
+function probeVideo(
+  durationSec: number,
+  frameCount: number,
+  options: { fps?: string; averageFps?: string; audio?: boolean } = {}
+): string {
+  const fps = options.fps ?? "30/1";
+  const streams: Record<string, unknown>[] = [{
+    index: 0,
+    codec_type: "video",
+    codec_name: "h264",
+    width: 1280,
+    height: 720,
+    pix_fmt: "yuv420p",
+    r_frame_rate: fps,
+    avg_frame_rate: options.averageFps ?? fps,
+    time_base: "1/15360",
+    duration: String(durationSec),
+    nb_frames: String(frameCount)
+  }];
+  if (options.audio !== false) {
+    streams.push({
+      index: 1, codec_type: "audio", codec_name: "aac",
+      sample_rate: "48000", duration: String(durationSec)
+    });
+  }
+  return JSON.stringify({ streams, format: { duration: String(durationSec) } });
+}
+
+function fixture(options: {
+  sourceDuration?: number;
+  sourceFrames?: number;
+  sourceFps?: string;
+  sourceAverageFps?: string;
+  sourceAudio?: boolean;
+  repairedFrames?: number;
+  repairedDuration?: number;
+  failTool?: "ffmpeg" | "ffprobe";
+} = {}) {
+  const directory = mkdtempSync(join(tmpdir(), "ailoom-temporal-test-"));
+  const sourcePath = join(directory, "source.mp4");
+  const workDir = join(directory, "work");
+  const repairedContextPath = join(directory, "repaired.mp4");
+  const outputPath = join(directory, "final.mp4");
+  mkdirSync(workDir);
+  writeFileSync(sourcePath, "source fixture");
+  writeFileSync(repairedContextPath, "repaired fixture");
+  const calls: CommandCall[] = [];
+  const sourceDuration = options.sourceDuration ?? 10;
+  const sourceFrames = options.sourceFrames ?? 300;
+  const sourceProbe = probeVideo(sourceDuration, sourceFrames, {
+    fps: options.sourceFps,
+    averageFps: options.sourceAverageFps,
+    audio: options.sourceAudio
+  });
+  const contextProbe = probeVideo(3, 90, { audio: false });
+  const repairedProbe = probeVideo(
+    options.repairedDuration ?? 3,
+    options.repairedFrames ?? 90,
+    { audio: false }
+  );
+  const outputProbe = probeVideo(sourceDuration, sourceFrames, {
+    audio: options.sourceAudio
+  });
+  const runCommand = async (executable: string, args: readonly string[]) => {
+    calls.push({ executable, args: [...args] });
+    const tool = basename(executable).toLowerCase();
+    if (options.failTool && tool.includes(options.failTool)) {
+      throw Object.assign(new Error("tool unavailable"), { code: "ENOENT" });
+    }
+    if (args.includes("-version")) {
+      return { stdout: tool + " version mock", stderr: "", exitCode: 0 };
+    }
+    if (tool.includes("ffprobe")) {
+      const path = args.at(-1) ?? "";
+      let kind: ProbeKind = "source";
+      if (path === repairedContextPath) kind = "repaired";
+      else if (path === outputPath) kind = "output";
+      else if (path.includes("mask")) kind = "mask";
+      else if (path !== sourcePath) kind = "context";
+      return {
+        stdout: kind === "source" ? sourceProbe
+          : kind === "repaired" ? repairedProbe
+            : kind === "output" ? outputProbe : contextProbe,
+        stderr: "",
+        exitCode: 0
+      };
+    }
+    if (tool.includes("ffmpeg")) {
+      const path = args.at(-1) ?? "";
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, "generated fixture");
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+    throw new Error("Unexpected command: " + executable);
+  };
+  return {
+    directory, sourcePath, workDir, repairedContextPath, outputPath,
+    calls, runCommand,
+    commandOptions: { ffmpegPath: "mock-ffmpeg", ffprobePath: "mock-ffprobe", runCommand },
+    cleanup: () => rmSync(directory, { recursive: true, force: true })
+  };
+}
+
+test("prepares a CFR context and mask at exact source frame boundaries", async () => {
+  const f = fixture();
+  try {
+    const plan = await prepareTemporalRepair({
+      sourcePath: f.sourcePath,
+      workDir: f.workDir,
+      startSec: 3,
+      endSec: 4,
+      contextSec: 1,
+      prompt: "Restore a scratch on the subject"
+    }, f.commandOptions);
+    const values = plan as unknown as Record<string, unknown>;
+    assert.equal(values.fps, 30);
+    assert.equal(values.frameCount, 90);
+    assert.equal(values.contextStartFrame, 60);
+    assert.equal(values.contextEndFrame, 150);
+    assert.equal(values.startFrame, 90);
+    assert.equal(values.endFrame, 120);
+    assert.equal(values.targetStartFrameInContext, 30);
+    assert.equal(values.targetEndFrameInContext, 60);
+    assert.ok(String(plan.contextVideoPath).startsWith(f.workDir));
+    assert.ok(String(plan.maskVideoPath).startsWith(f.workDir));
+    assert.notEqual(plan.contextVideoPath, plan.maskVideoPath);
+    const ffmpeg = f.calls.filter(call => call.executable.includes("ffmpeg") && !call.args.includes("-version"));
+    assert.equal(ffmpeg.length, 2);
+    const extraction = ffmpeg.find(call => call.args.at(-1) === plan.contextVideoPath);
+    const mask = ffmpeg.find(call => call.args.at(-1) === plan.maskVideoPath);
+    assert.ok(extraction, "context video should be extracted");
+    assert.ok(mask, "mask video should be generated");
+    assert.ok(extraction.args.includes(f.sourcePath));
+    assert.match(mask.args.join(" "), /30/);
+    assert.match(mask.args.join(" "), /60|59/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("splices only repaired interval and keeps audio mapped from original source", async () => {
+  const f = fixture();
+  try {
+    const plan = await prepareTemporalRepair({
+      sourcePath: f.sourcePath,
+      workDir: f.workDir,
+      startSec: 3,
+      endSec: 4,
+      contextSec: 1,
+      prompt: "Restore a scratch"
+    }, f.commandOptions);
+    const result = await spliceTemporalRepair({
+      plan,
+      repairedContextPath: f.repairedContextPath,
+      outputPath: f.outputPath
+    }, f.commandOptions);
+    assert.equal(result.outputPath, f.outputPath);
+    assert.equal(result.durationSec, 10);
+    assert.equal(result.audioPreserved, true);
+    const splice = f.calls.filter(call =>
+      call.executable.includes("ffmpeg") && call.args.at(-1) === f.outputPath
+    );
+    assert.equal(splice.length, 1);
+    const joined = splice[0].args.join(" ");
+    assert.ok(splice[0].args.includes(f.sourcePath));
+    assert.ok(splice[0].args.includes(f.repairedContextPath));
+    assert.match(joined, /trim|select/);
+    assert.match(joined, /concat/);
+    assert.match(joined, /trim=start_frame=0:end_frame=90/);
+    assert.match(joined, /trim=start_frame=30:end_frame=60/);
+    assert.match(joined, /trim=start_frame=120:end_frame=300/);
+    assert.match(joined, /0:a/);
+    assert.deepEqual(splice[0].args.flatMap((arg, index) => arg === "-map" ? [splice[0].args[index + 1]] : []), ["[video]", "0:a?"]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("invalid ranges fail before running media commands", async () => {
+  const f = fixture();
+  try {
+    for (const [startSec, endSec] of [[-1, 1], [4, 4], [5, 4], [0, 11]]) {
+      await assert.rejects(prepareTemporalRepair({
+        sourcePath: f.sourcePath, workDir: f.workDir,
+        startSec, endSec, prompt: "Repair"
+      }, f.commandOptions));
+    }
+    assert.equal(f.calls.some(call => call.executable.includes("ffmpeg") && !call.args.includes("-version")), false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("variable frame rate source and excessive context frames are rejected", async () => {
+  const variable = fixture({ sourceAverageFps: "25/1" });
+  try {
+    await assert.rejects(prepareTemporalRepair({
+      sourcePath: variable.sourcePath, workDir: variable.workDir,
+      startSec: 3, endSec: 4, prompt: "Repair"
+    }, variable.commandOptions));
+    assert.equal(variable.calls.some(call => call.executable.includes("ffmpeg") && !call.args.includes("-version")), false);
+  } finally {
+    variable.cleanup();
+  }
+
+  const oversized = fixture({ sourceDuration: 20, sourceFrames: 600 });
+  try {
+    await assert.rejects(prepareTemporalRepair({
+      sourcePath: oversized.sourcePath, workDir: oversized.workDir,
+      startSec: 4, endSec: 13, contextSec: 2, prompt: "Repair"
+    }, oversized.commandOptions));
+    assert.equal(oversized.calls.some(call => call.executable.includes("ffmpeg") && !call.args.includes("-version")), false);
+  } finally {
+    oversized.cleanup();
+  }
+});
+
+test("missing ffprobe or ffmpeg fails explicitly through the injected runner", async () => {
+  for (const failTool of ["ffprobe", "ffmpeg"] as const) {
+    const f = fixture({ failTool });
+    try {
+      await assert.rejects(prepareTemporalRepair({
+        sourcePath: f.sourcePath, workDir: f.workDir,
+        startSec: 3, endSec: 4, prompt: "Repair"
+      }, f.commandOptions));
+      assert.ok(f.calls.some(call => call.executable.includes(failTool)));
+    } finally {
+      f.cleanup();
+    }
+  }
+});
+
+test("splicing rejects a repaired clip whose frame count does not match the context", async () => {
+  const f = fixture({ repairedFrames: 89 });
+  try {
+    const plan = await prepareTemporalRepair({
+      sourcePath: f.sourcePath, workDir: f.workDir,
+      startSec: 3, endSec: 4, contextSec: 1, prompt: "Repair"
+    }, f.commandOptions);
+    await assert.rejects(spliceTemporalRepair({
+      plan, repairedContextPath: f.repairedContextPath, outputPath: f.outputPath
+    }, f.commandOptions));
+    assert.equal(f.calls.some(call =>
+      call.executable.includes("ffmpeg") && call.args.at(-1) === f.outputPath
+    ), false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+
+
+
