@@ -6,6 +6,7 @@ export type MediaProvider = "kie" | "fal" | "wavespeed";
 export type MediaOperation =
   | "text_to_image"
   | "image_edit"
+  | "image_upscale"
   | "text_to_video"
   | "image_to_video"
   | "reference_to_video"
@@ -58,6 +59,15 @@ export const MEDIA_MODELS: readonly MediaModel[] = [
     outputKind: "image",
     docsUrl: "https://fal.ai/models/fal-ai/qwen-image-edit/api",
     priceNote: "Published rate is $0.03 per output megapixel; final charge may vary by account."
+  },
+  {
+    id: "topaz/upscale/image/precision",
+    provider: "fal",
+    name: "Topaz Precision Upscale",
+    operations: ["image_upscale"],
+    outputKind: "image",
+    docsUrl: "https://fal.ai/models/topaz/upscale/image/precision/api",
+    priceNote: "Published rate is $0.08 per started 24 megapixels of output. Final charge depends on actual output dimensions and account terms."
   },
   {
     id: "fal-ai/veo3.1/fast",

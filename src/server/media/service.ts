@@ -131,6 +131,17 @@ const qwenEditSchema = z.strictObject({
   imageSize: imageSize.optional(),
   outputFormat: imageFormat.optional()
 });
+const topazPrecisionSchema = z.strictObject({
+  modelId: z.literal("topaz/upscale/image/precision"),
+  operation: z.literal("image_upscale"),
+  imageUrl: safeUrl,
+  upscaleFactor: z.union([z.literal(2), z.literal(4)]).optional(),
+  upscaleModel: z.enum([
+    "Standard V2", "High Fidelity V3", "High Fidelity V2",
+    "Low Resolution V2", "CGI", "Text Refine", "Faces"
+  ]).optional(),
+  outputFormat: imageFormat.optional()
+});
 const veoTextSchema = z.strictObject({
   modelId: z.literal("fal-ai/veo3.1/fast"),
   operation: z.literal("text_to_video"),
@@ -327,6 +338,18 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
         num_images: 1,
         enable_safety_checker: true
       };
+      break;
+    }
+    case "topaz/upscale/image/precision": {
+      const value = checked(topazPrecisionSchema, input);
+      providerInput = {
+        image_url: value.imageUrl,
+        model: value.upscaleModel ?? "Standard V2",
+        upscale_factor: value.upscaleFactor ?? 2,
+        output_format: value.outputFormat ?? "jpeg"
+      };
+      // The provider bills per started output-megapixel block. The source
+      // dimensions are not known from a signed URL alone, so no fixed quote.
       break;
     }
     case "fal-ai/veo3.1/fast": {

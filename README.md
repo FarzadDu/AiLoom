@@ -5,9 +5,9 @@ Ailoom is an English-first, Persian-capable, invite-only AI workspace. The curre
 ## Current capabilities
 
 - Chat is the first screen, supports English and Persian direction, remembers the selected OpenRouter model, and stores private conversations. Messages can include uploaded images, PDF documents, generated images, and cited web-search results. A PDF attached to chat is sent to OpenRouter for parsing with its Cloudflare AI parser and model response; chat limits each attachment to 10 MB.
-- Image Studio can create with Kie Nano Banana 2, WaveSpeed Z Image Turbo or fal FLUX.2 Pro, and edit a reference image with fal Qwen Image Edit.
+- Image Studio can create with Kie Nano Banana 2, WaveSpeed Z Image Turbo or fal FLUX.2 Pro, edit a reference image with fal Qwen Image Edit, and upscale a private reference image 2× or 4× with Topaz Precision through fal. Topaz's final price depends on output dimensions and provider account terms.
 - Video Studio can create with fal Veo 3.1 Fast or Seedance 2.5, animate a reference image, and queue a short temporal repair. Repair preserves the untouched video intervals and original audio after the provider returns its edited interval. A public HTTPS origin is required for provider access to private references and has not yet been validated on the final host.
-- Audio Studio currently generates speech through the fal Eleven v3 endpoint. Music, transcription and other visible future controls are disabled until their full workflows are implemented.
+- Audio Studio generates speech through the fal Eleven v3 endpoint. Its authenticated transcription endpoint accepts MP3, WAV, OGG, MP4 and WebM uploads up to 50 MB and returns Scribe v2 text, detected language and word timings. Music and other future controls remain unavailable.
 - Explore seeds five private, editable starter workflows per invited account. A workflow runs its chat, image, video and audio steps in order while the Explore page is open, passes private assets to later steps, and resumes saved jobs after a return to the page. Owners can publish or return templates to private. Three editable specialist profiles cover general health, skin and hair, and mental well-being.
 - Administrators can create and revoke one-time user or admin invitations in the `/admin` page; invitation links appear only once when created.
 
@@ -51,6 +51,6 @@ node --import tsx scripts/smoke-auth.ts
 5. Open a one-time terminal in the running `web` container in Coolify and run `node --import tsx scripts/bootstrap-admin.ts`. If operating from the server's Compose project directory, the equivalent is `docker compose exec web node --import tsx scripts/bootstrap-admin.ts`. The command prints the admin invitation URL only to that terminal. Treat it as a credential: do not include it in deployment logs, support tickets, screenshots, or chat messages. Visit the link personally and create the admin account. Re-running after an account exists is rejected.
 6. Test sign-in, one chat message, a queued media job and its saved private result, and a signed private reference on the final domain before relying on automatic deployment. Back up `ailoom_data` consistently; it contains the SQLite database and private media.
 
-SQLite write-ahead logging requires web and worker to share a local volume on one host. The supplied Compose file is for a single server. Move to a server database and object storage before horizontal scaling. Docker is not available in the current local development environment, so the image and Coolify deployment require a real host validation.
+SQLite write-ahead logging requires web and worker to share a local volume on one host. The supplied Compose file is for a single server. Move to a server database and object storage before horizontal scaling. The Docker Compose deployment has been validated on the final HTTPS host; signed private-reference and temporal repair workflows still need live provider validation.
 
 

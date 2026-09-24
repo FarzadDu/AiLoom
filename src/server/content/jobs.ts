@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, desc, eq, or } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lte, or } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db";
 import { generationJob } from "../db/schema";
@@ -11,6 +11,7 @@ export const jobKinds = ["image", "video", "audio", "edit", "upscale", "transcri
 export const jobStates = ["queued", "submitting", "running", "succeeded", "failed", "cancelled"] as const;
 export type JobKind = typeof jobKinds[number];
 export type JobState = typeof jobStates[number];
+export const GENERATION_LEASE_MS = 2 * 60 * 1000;
 
 const newJobSchema = z.object({
   kind: z.enum(jobKinds),
@@ -76,7 +77,8 @@ export function createGenerationJob(ownerId: string, input: {
   const record = {
     id: jobId, ownerId, projectId: parsed.projectId ?? null,
     kind: parsed.kind, provider: parsed.provider, providerModel: parsed.providerModel,
-    externalId: null, state: "queued" as const, inputJson: encodeJson(payload), outputJson: null,
+    externalId: null, state: "queued" as const, leaseOwner: null, leaseExpiresAt: null,
+    inputJson: encodeJson(payload), outputJson: null,
     costEstimateMicrosUsd: parsed.costEstimateMicrosUsd ?? null, errorCode: null,
     createdAt: now, updatedAt: now, completedAt: null
   };
@@ -110,9 +112,10 @@ export function listGenerationJobs(ownerId: string, options: { limit?: number; s
 
 export function transitionGenerationJob(ownerId: string, jobId: string, input: {
   state: JobState; externalId?: string | null; output?: JsonValue;
-  errorCode?: string | null; costEstimateMicrosUsd?: number | null;
+  errorCode?: string | null; costEstimateMicrosUsd?: number | null; leaseOwner?: string;
 }) {
-  const { output, ...metadata } = input;
+  const { output, leaseOwner, ...metadata } = input;
+  if (leaseOwner !== undefined) z.uuid().parse(leaseOwner);
   const parsed = z.object({
     state: z.enum(jobStates),
     externalId: z.string().trim().min(1).max(500).nullable().optional(),
@@ -123,20 +126,26 @@ export function transitionGenerationJob(ownerId: string, jobId: string, input: {
     const current = tx.select().from(generationJob)
       .where(and(eq(generationJob.id, jobId), eq(generationJob.ownerId, ownerId))).get();
     if (!current) return null;
+    if (leaseOwner !== undefined && current.leaseOwner !== leaseOwner) return null;
     if (!allowedTransitions[current.state].includes(parsed.state)) {
       throw new Error(`Invalid generation job transition: ${current.state} to ${parsed.state}`);
     }
     const now = new Date();
     const completedAt = ["succeeded", "failed", "cancelled"].includes(parsed.state) ? now : null;
-    tx.update(generationJob).set({
+    const changed = tx.update(generationJob).set({
       state: parsed.state,
+      leaseOwner: null,
+      leaseExpiresAt: null,
       externalId: parsed.externalId === undefined ? current.externalId : parsed.externalId,
       outputJson: output === undefined ? current.outputJson : encodeJson(output),
       errorCode: parsed.errorCode === undefined ? current.errorCode : parsed.errorCode,
       costEstimateMicrosUsd: parsed.costEstimateMicrosUsd === undefined
         ? current.costEstimateMicrosUsd : parsed.costEstimateMicrosUsd,
       updatedAt: now, completedAt
-    }).where(and(eq(generationJob.id, jobId), eq(generationJob.ownerId, ownerId), eq(generationJob.state, current.state))).run();
+    }).where(and(eq(generationJob.id, jobId), eq(generationJob.ownerId, ownerId),
+      eq(generationJob.state, current.state),
+      leaseOwner === undefined ? undefined : eq(generationJob.leaseOwner, leaseOwner))).run();
+    if (changed.changes !== 1) return null;
     const updated = tx.select().from(generationJob).where(eq(generationJob.id, jobId)).get();
     return updated ? hydrate(updated) : null;
   });
@@ -144,17 +153,66 @@ export function transitionGenerationJob(ownerId: string, jobId: string, input: {
 
 // Call from the trusted worker only. The state predicate ensures two workers
 // cannot claim the same queued job, even when they share the SQLite volume.
-export function claimNextQueuedJob() {
+export function claimNextQueuedJob(leaseOwner = randomUUID()) {
+  z.uuid().parse(leaseOwner);
   return getDb().transaction((tx) => {
     const next = tx.select().from(generationJob).where(eq(generationJob.state, "queued"))
       .orderBy(asc(generationJob.createdAt), asc(generationJob.id)).limit(1).get();
     if (!next) return null;
-    const changed = tx.update(generationJob).set({ state: "submitting", updatedAt: new Date() })
+    const now = new Date();
+    const changed = tx.update(generationJob).set({ state: "submitting", leaseOwner,
+      leaseExpiresAt: new Date(now.getTime() + GENERATION_LEASE_MS), updatedAt: now })
       .where(and(eq(generationJob.id, next.id), eq(generationJob.state, "queued"))).run();
     if (changed.changes !== 1) return null;
     const claimed = tx.select().from(generationJob).where(eq(generationJob.id, next.id)).get();
     return claimed ? hydrate(claimed) : null;
   });
+}
+
+export function renewGenerationJobLease(ownerId: string, jobId: string, leaseOwner: string,
+  state: "submitting" | "running"): boolean {
+  const now = new Date();
+  const changed = getDb().update(generationJob)
+    .set({ leaseExpiresAt: new Date(now.getTime() + GENERATION_LEASE_MS) })
+    .where(and(eq(generationJob.id, jobId), eq(generationJob.ownerId, ownerId),
+      eq(generationJob.state, state), eq(generationJob.leaseOwner, leaseOwner)))
+    .run();
+  return changed.changes === 1;
+}
+
+export function claimRunningGenerationJob(ownerId: string, jobId: string, leaseOwner: string) {
+  z.uuid().parse(leaseOwner);
+  const now = new Date();
+  const claimed = getDb().update(generationJob)
+    .set({ leaseOwner, leaseExpiresAt: new Date(now.getTime() + GENERATION_LEASE_MS) })
+    .where(and(eq(generationJob.id, jobId), eq(generationJob.ownerId, ownerId),
+      eq(generationJob.state, "running"),
+      or(isNull(generationJob.leaseExpiresAt), lte(generationJob.leaseExpiresAt, now))))
+    .returning().get();
+  return claimed ? hydrate(claimed) : null;
+}
+
+export function releaseGenerationJobLease(ownerId: string, jobId: string, leaseOwner: string): boolean {
+  const changed = getDb().update(generationJob)
+    .set({ leaseOwner: null, leaseExpiresAt: null, updatedAt: new Date() })
+    .where(and(eq(generationJob.id, jobId), eq(generationJob.ownerId, ownerId),
+      eq(generationJob.state, "running"), eq(generationJob.leaseOwner, leaseOwner)))
+    .run();
+  return changed.changes === 1;
+}
+
+export function expireStaleSubmittingJob(ownerId: string, jobId: string): boolean {
+  const now = new Date();
+  const legacyGrace = new Date(now.getTime() - GENERATION_LEASE_MS);
+  const changed = getDb().update(generationJob)
+    .set({ state: "failed", leaseOwner: null, leaseExpiresAt: null,
+      errorCode: "submission_uncertain", updatedAt: now, completedAt: now })
+    .where(and(eq(generationJob.id, jobId), eq(generationJob.ownerId, ownerId),
+      eq(generationJob.state, "submitting"), isNull(generationJob.externalId),
+      or(lte(generationJob.leaseExpiresAt, now),
+        and(isNull(generationJob.leaseExpiresAt), lte(generationJob.updatedAt, legacyGrace)))))
+    .run();
+  return changed.changes === 1;
 }
 
 // Trusted-worker view for polling tasks already accepted by a provider.

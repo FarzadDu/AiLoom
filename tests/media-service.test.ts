@@ -11,7 +11,10 @@ const maskUrl = "https://assets.example.com/mask.mp4";
 
 test("catalog exposes only documented model IDs and filters by operation", () => {
   const models = listMediaModels();
-  assert.equal(models.length, 10);
+  assert.equal(models.length, 11);
+  assert.deepEqual(listMediaModels("image_upscale").map(model => model.id), [
+    "topaz/upscale/image/precision"
+  ]);
   assert.deepEqual(listMediaModels("temporal_inpaint").map(model => model.id), [
     "fal-ai/ltx-2.3-quality/inpaint"
   ]);
@@ -59,6 +62,70 @@ test("image edit uses documented Qwen image URL and rejects private asset URLs",
     (error: unknown) => error instanceof MediaRequestError &&
       error.code === "invalid_input" && error.fields.includes("imageUrl")
   );
+});
+
+test("Topaz precision upscale uses documented fal fields and refuses invalid sources", () => {
+  const request = prepareMediaRequest({
+    modelId: "topaz/upscale/image/precision", operation: "image_upscale",
+    imageUrl, upscaleFactor: 4, upscaleModel: "High Fidelity V3", outputFormat: "png"
+  });
+  assert.equal(request.provider, "fal");
+  assert.deepEqual(request.providerInput, {
+    image_url: imageUrl, model: "High Fidelity V3",
+    upscale_factor: 4, output_format: "png"
+  });
+  assert.equal(request.priceEstimate, null);
+  assert.deepEqual(prepareMediaRequest({
+    modelId: "topaz/upscale/image/precision", operation: "image_upscale", imageUrl
+  }).providerInput, {
+    image_url: imageUrl, model: "Standard V2",
+    upscale_factor: 2, output_format: "jpeg"
+  });
+  for (const invalid of [
+    { imageUrl: "http://127.0.0.1/private" },
+    { upscaleFactor: 8 },
+    { upscaleModel: "Wonder 3" },
+    { outputFormat: "webp" },
+    { prompt: "unexpected" }
+  ]) {
+    assert.throws(() => prepareMediaRequest({
+      modelId: "topaz/upscale/image/precision", operation: "image_upscale", imageUrl,
+      ...invalid
+    }), (error: unknown) => error instanceof MediaRequestError && error.code === "invalid_input");
+  }
+});
+
+test("Topaz upscale submits through fal queue and reads the single image result", async () => {
+  const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+  const fetcher: typeof fetch = async (url, init) => {
+    const address = String(url);
+    calls.push({ url: address, method: init?.method ?? "GET",
+      ...(init?.body ? { body: JSON.parse(String(init.body)) as Record<string, unknown> } : {}) });
+    if (init?.method === "POST") return Response.json({ request_id: "topaz_1", queue_position: 0 });
+    if (address.endsWith("/status?logs=0")) {
+      return Response.json({ request_id: "topaz_1", status: "COMPLETED" });
+    }
+    return Response.json({ image: {
+      url: "https://cdn.example/upscaled.png", content_type: "image/png"
+    } });
+  };
+  const input = {
+    modelId: "topaz/upscale/image/precision", operation: "image_upscale",
+    imageUrl, upscaleFactor: 2
+  };
+  const submitted = await submitMediaRequest(input, { fetcher, apiKeys: { fal: "test-key" } });
+  const result = await getMediaTask({
+    modelId: submitted.modelId, providerTaskId: submitted.providerTaskId
+  }, { fetcher, apiKeys: { fal: "test-key" } });
+  assert.equal(calls[0].url, "https://queue.fal.run/topaz/upscale/image/precision");
+  assert.deepEqual(calls[0].body, {
+    image_url: imageUrl, model: "Standard V2", upscale_factor: 2, output_format: "jpeg"
+  });
+  assert.equal(calls[1].url, "https://queue.fal.run/topaz/upscale/requests/topaz_1/status?logs=0");
+  assert.equal(calls[2].url, "https://queue.fal.run/topaz/upscale/requests/topaz_1");
+  assert.deepEqual(result.assets, [{
+    kind: "image", url: "https://cdn.example/upscaled.png", contentType: "image/png"
+  }]);
 });
 
 test("Veo text and image routes allow only documented 4, 6 and 8 second durations", () => {

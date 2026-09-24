@@ -100,6 +100,7 @@ export async function transcribeAudio(options: {
   if (!options.bytes.length) throw new Error("Audio file is empty.");
   const form = new FormData();
   form.set("model_id", "scribe_v2");
+  form.set("timestamps_granularity", "word");
   form.set("file", new Blob([new Uint8Array(options.bytes)], { type: options.mimeType }), options.filename);
   if (options.languageCode) form.set("language_code", options.languageCode);
   if (options.diarize) form.set("diarize", "true");

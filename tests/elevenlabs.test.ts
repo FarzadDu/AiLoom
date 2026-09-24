@@ -24,6 +24,7 @@ test("transcription sends multipart media and parses a timed transcript", async 
     assert.equal(init?.body instanceof FormData, true);
     const form = init?.body as FormData;
     assert.equal(form.get("model_id"), "scribe_v2");
+    assert.equal(form.get("timestamps_granularity"), "word");
     assert.equal(form.get("language_code"), "fa");
     assert.equal(form.get("diarize"), "true");
     assert.equal((form.get("file") as File).name, "sample.mp3");

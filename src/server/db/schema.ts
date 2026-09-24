@@ -133,6 +133,8 @@ export const generationJob = sqliteTable("generation_job", {
   providerModel: text("providerModel").notNull(),
   externalId: text("externalId"),
   state: text("state", { enum: ["queued", "submitting", "running", "succeeded", "failed", "cancelled"] }).notNull().default("queued"),
+  leaseOwner: text("lease_owner"),
+  leaseExpiresAt: integer("lease_expires_at", { mode: "timestamp" }),
   inputJson: text("inputJson").notNull(),
   outputJson: text("outputJson"),
   costEstimateMicrosUsd: integer("costEstimateMicrosUsd"),

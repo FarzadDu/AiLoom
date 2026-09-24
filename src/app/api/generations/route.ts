@@ -9,6 +9,7 @@ export const runtime = "nodejs";
 
 function jobKind(operation: string): JobKind {
   if (operation === "text_to_image") return "image";
+  if (operation === "image_upscale") return "upscale";
   if (operation === "image_edit" || operation === "temporal_inpaint") return "edit";
   if (operation === "text_to_speech") return "audio";
   return "video";

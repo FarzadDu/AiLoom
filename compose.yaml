@@ -20,6 +20,7 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in Coolify}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
     volumes:
       - ailoom_data:/app/data
     healthcheck:

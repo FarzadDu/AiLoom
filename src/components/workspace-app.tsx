@@ -9,6 +9,7 @@ import {
   ChevronDown,
   Clock3,
   Compass,
+  Copy,
   Download,
   FileText,
   Image as ImageIcon,
@@ -36,12 +37,14 @@ import { conversationsFromPayload, messagesFromPayload, modelsFromPayload, readC
 import { ExplorePage as ConnectedExplorePage, SpecialistsPage as ConnectedSpecialistsPage } from "./content-pages";
 import { libraryPageFromPayload, mediaAssetsFromJob, mediaDownloadName, mediaJobFromPayload, mediaModelsFromPayload, type LibraryAsset, type MediaAsset, type MediaJob, type MediaModel } from "./media-api";
 import { copy, mediaViews, modelOptions, views, type Locale, type MediaView, type Theme, type View } from "./workspace-data";
+import { clearStoredDrafts, emptyDrafts, readUserDrafts, writeUserDrafts, type Drafts } from "./workspace-privacy";
+import { speakerTurns, transcriptDownloadName, transcriptFromPayload, type TranscriptResult } from "./transcription-ui";
+import { upscalePresets, upscaleRequest, upscaleRequestIdentity, type UpscalePreset, type UpscaleSettings } from "./upscale-request";
 
-type Drafts = Record<View, string>;
 type Models = Record<View, string>;
 type LocalFile = { name: string; mime: string; url: string; file?: File; assetId?: string };
 type OutputTab = "text" | "image" | "video" | "audio";
-type StudioRequestOptions = { modeIndex: number; aspect: string; quality: string; duration: number | "auto"; audio: boolean; modelId: string; language: string; repairStart: number; repairEnd: number };
+type StudioRequestOptions = { modeIndex: number; aspect: string; quality: string; duration: number | "auto"; audio: boolean; modelId: string; language: string; repairStart: number; repairEnd: number; upscale: UpscaleSettings };
 
 const navIcons: Record<View, LucideIcon> = {
   chat: MessageCircle,
@@ -52,7 +55,6 @@ const navIcons: Record<View, LucideIcon> = {
   specialists: UsersRound
 };
 
-const emptyDrafts: Drafts = { chat: "", image: "", video: "", audio: "", explore: "", specialists: "" };
 const defaultModels: Models = { chat: "openrouter/auto", image: "fal-ai/flux-2-pro", video: "fal-ai/veo3.1/fast", audio: "fal-ai/elevenlabs/tts/eleven-v3", explore: "auto", specialists: "auto" };
 
 function isMediaView(view: View): view is MediaView {
@@ -65,6 +67,11 @@ function readStorage(key: string): string | null {
 
 function writeStorage(key: string, value: string) {
   try { window.localStorage.setItem(key, value); } catch { /* Private browsing can disable storage. */ }
+}
+
+function loadUserDrafts(userId: string): Drafts {
+  try { return readUserDrafts(window.localStorage, userId); }
+  catch { return emptyDrafts(); }
 }
 
 function viewFromHash(): View {
@@ -360,11 +367,137 @@ function GeneratedResult({ asset, locale, initialVisibility, onVisibilityChange 
   </div>;
 }
 
-function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, preview, onFile, onRemoveFile, availableModels, job, jobError, busy, initialMode, signedIn }: {
+function TranscriptionPanel({ locale, signedIn, onLogin }: { locale: Locale; signedIn: boolean; onLogin: () => void }) {
+  const t = copy[locale];
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [language, setLanguage] = useState("auto");
+  const [diarize, setDiarize] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<TranscriptResult | null>(null);
+  const [copied, setCopied] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const requestRef = useRef<AbortController | null>(null);
+  const submittingRef = useRef(false);
+
+  useEffect(() => {
+    if (!file) { setPreviewUrl(null); return; }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  useEffect(() => () => requestRef.current?.abort(), []);
+
+  const chooseFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.currentTarget.files?.[0] ?? null;
+    event.currentTarget.value = "";
+    if (!selected) return;
+    setResult(null);
+    setCopied(false);
+    if (!selected.size || selected.size > 50_000_000) {
+      setFile(null);
+      setError(t.transcriptionTooLarge);
+      return;
+    }
+    setFile(selected);
+    setError("");
+  };
+
+  const transcribe = async () => {
+    if (submittingRef.current) return;
+    if (!file) { setError(t.transcriptionNoFile); fileRef.current?.focus(); return; }
+    if (!signedIn) { onLogin(); return; }
+    submittingRef.current = true;
+    setPending(true);
+    setError("");
+    setResult(null);
+    setCopied(false);
+    const controller = new AbortController();
+    requestRef.current = controller;
+    try {
+      const form = new FormData();
+      form.set("file", file);
+      if (language !== "auto") form.set("languageCode", language);
+      form.set("diarize", diarize ? "true" : "false");
+      const response = await fetch("/api/audio/transcribe", {
+        method: "POST", credentials: "same-origin", body: form, signal: controller.signal
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      const transcript = transcriptFromPayload(await response.json());
+      if (!transcript) throw new Error(t.transcriptionInvalidResponse);
+      if (!controller.signal.aborted) setResult(transcript);
+    } catch (reason) {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t.transcriptionInvalidResponse);
+    } finally {
+      if (requestRef.current === controller) requestRef.current = null;
+      submittingRef.current = false;
+      if (!controller.signal.aborted) setPending(false);
+    }
+  };
+
+  const copyText = async () => {
+    if (!result) return;
+    try { await navigator.clipboard.writeText(result.text); setCopied(true); }
+    catch { setError(t.transcriptionCopyError); }
+  };
+  const downloadText = () => {
+    if (!result) return;
+    const url = URL.createObjectURL(new Blob([result.text], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = transcriptDownloadName(file?.name ?? "transcript");
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+  const turns = result && diarize ? speakerTurns(result.words) : [];
+  const speakerIds = [...new Set(turns.map(turn => turn.speakerId))];
+  const detectedLanguage = result?.languageCode === "en" ? t.english
+    : result?.languageCode === "fa" ? t.persian : result?.languageCode?.toUpperCase();
+
+  return <>
+    <div className="studio-layout transcription-layout">
+      <div className="canvas-column">
+        <div className="canvas-top"><strong>{t.transcriptionTitle}</strong><span>{file ? t.localPreview : t.canvasReady}</span></div>
+        <div className="studio-canvas studio-canvas-audio transcription-canvas">
+          {file && previewUrl ? <div className="uploaded-audio">
+            <AudioLines size={31} aria-hidden="true" /><strong title={file.name}>{file.name}</strong>
+            {file.type.startsWith("video/") ? <video src={previewUrl} controls preload="metadata" />
+              : <audio src={previewUrl} controls preload="metadata" />}
+          </div> : <div className="canvas-empty"><span className="canvas-empty-icon"><FileText size={30} aria-hidden="true" /></span><strong>{t.transcriptionTitle}</strong><p>{t.transcriptionDescription}</p><button type="button" onClick={() => fileRef.current?.click()}><Upload size={18} aria-hidden="true" />{t.transcriptionChooseFile}</button></div>}
+        </div>
+        <p className="canvas-footnote"><ShieldCheck size={17} aria-hidden="true" />{t.transcriptionProviderNote}</p>
+      </div>
+      <aside className="inspector" aria-label={t.settings}>
+        <div className="inspector-heading"><span><SlidersHorizontal size={19} aria-hidden="true" />{t.input}</span></div>
+        <input ref={fileRef} className="sr-only" type="file" accept=".mp3,.wav,.ogg,.m4a,.mp4,.webm,audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/webm,video/mp4,video/webm" onChange={chooseFile} aria-label={t.transcriptionChooseFile} />
+        <button className="outline-action transcription-file-button" type="button" onClick={() => fileRef.current?.click()} disabled={pending}><Upload size={17} aria-hidden="true" />{t.transcriptionChooseFile}</button>
+        {file && <div className="file-chip"><span title={file.name}>{file.name}</span><button type="button" aria-label={t.removeFile} disabled={pending} onClick={() => { setFile(null); setResult(null); setError(""); }}><X size={15} /></button></div>}
+        <p className="transcription-file-hint">{t.transcriptionDescription}</p>
+        <div className="inspector-divider" />
+        <div className="inspector-heading subtle"><span>{t.settings}</span></div>
+        <div className="form-field"><label htmlFor="transcription-language">{t.language}</label><div className="select-shell"><select id="transcription-language" value={language} onChange={event => setLanguage(event.target.value)} disabled={pending}><option value="auto">{t.automatic}</option><option value="en">{t.english}</option><option value="fa">{t.persian}</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>
+        <label className="toggle-field"><input type="checkbox" checked={diarize} onChange={event => setDiarize(event.target.checked)} disabled={pending} /><span>{t.transcriptionDiarize}</span></label>
+        <div className="inspector-spacer" />
+        <button className="primary-action" type="button" onClick={() => void transcribe()} disabled={pending}>{pending ? t.transcriptionWorking : t.transcriptionAction}<ArrowRight size={17} aria-hidden="true" /></button>
+        {error && <p className="transcription-error" role="alert">{error}</p>}
+      </aside>
+    </div>
+    {result && <section className="transcription-result" aria-labelledby="transcription-result-title">
+      <div className="transcription-result-heading"><div><span className="section-eyebrow">{t.transcriptionAction}</span><h2 id="transcription-result-title">{t.transcriptionResult}</h2>{detectedLanguage && <p>{t.transcriptionDetectedLanguage}: {detectedLanguage}</p>}</div><div className="transcription-result-actions"><button type="button" onClick={() => void copyText()}><Copy size={16} aria-hidden="true" />{copied ? t.transcriptionCopied : t.transcriptionCopy}</button><button type="button" onClick={downloadText}><Download size={16} aria-hidden="true" />{t.transcriptionDownload}</button></div></div>
+      <div className="transcription-text" dir="auto">{result.text || t.transcriptionEmpty}</div>
+      {turns.length > 0 && <div className="transcription-turns">{turns.map((turn, index) => <div className="transcription-turn" key={`${index}-${turn.start}`}><span>{t.transcriptionSpeaker} {speakerIds.indexOf(turn.speakerId) + 1} · {Math.floor(turn.start / 60).toString().padStart(2, "0")}:{Math.floor(turn.start % 60).toString().padStart(2, "0")}</span><p dir="auto">{turn.text}</p></div>)}</div>}
+    </section>}
+  </>;
+}
+
+function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, preview, onFile, onRemoveFile, availableModels, job, jobError, busy, initialMode, signedIn, onLogin }: {
   view: MediaView; locale: Locale; model: string; onModel: (value: string) => void;
   draft: string; onDraft: (value: string) => void; onSubmit: (options: StudioRequestOptions) => void;
   preview: LocalFile | null; onFile: (event: ChangeEvent<HTMLInputElement>) => void; onRemoveFile: () => void;
-  availableModels: MediaModel[]; job: MediaJob | null; jobError: string; busy: boolean; initialMode: number; signedIn: boolean;
+  availableModels: MediaModel[]; job: MediaJob | null; jobError: string; busy: boolean; initialMode: number; signedIn: boolean; onLogin: () => void;
 }) {
   const t = copy[locale];
   const [activeMode, setActiveMode] = useState(initialMode);
@@ -376,6 +509,9 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   const [clipDuration, setClipDuration] = useState(30);
   const [repairStart, setRepairStart] = useState(10);
   const [repairEnd, setRepairEnd] = useState(12);
+  const [upscaleFactor, setUpscaleFactor] = useState<2 | 4>(2);
+  const [upscalePreset, setUpscalePreset] = useState<UpscalePreset>("Standard V2");
+  const [upscaleFormat, setUpscaleFormat] = useState<"jpeg" | "png">("jpeg");
   const [library, setLibrary] = useState<LibraryAsset[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryError, setLibraryError] = useState("");
@@ -390,14 +526,15 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const CurrentIcon = navIcons[view];
   const tabs = t.studioTab[view];
-  const activeOperation = view === "image" ? activeMode === 0 ? "text_to_image" : activeMode === 1 ? "image_edit" : null
+  const activeOperation = view === "image" ? activeMode === 0 ? "text_to_image" : activeMode === 1 ? "image_edit" : "image_upscale"
     : view === "video" ? activeMode === 0 ? "text_to_video" : activeMode === 1 ? "reference_to_video" : activeMode === 2 ? "temporal_inpaint" : null
     : activeMode === 0 ? "text_to_speech" : null;
   const relevantModels = activeOperation ? availableModels.filter(item => item.operations.includes(activeOperation) || activeOperation === "reference_to_video" && item.operations.includes("image_to_video")) : [];
   const fallbackModels = modelOptions[view].filter(item => activeOperation === "image_edit" ? item.id === "fal-ai/qwen-image-edit"
+    : activeOperation === "image_upscale" ? item.id === "topaz/upscale/image/precision"
     : activeOperation === "temporal_inpaint" ? item.id === "fal-ai/ltx-2.3-quality/inpaint"
     : activeOperation === "reference_to_video" ? item.id === "bytedance/seedance-2.5/reference-to-video" || item.id === "fal-ai/veo3.1/fast/image-to-video"
-    : activeOperation === "text_to_image" ? item.id !== "fal-ai/qwen-image-edit"
+    : activeOperation === "text_to_image" ? item.id !== "fal-ai/qwen-image-edit" && item.id !== "topaz/upscale/image/precision"
     : activeOperation === "text_to_video" ? item.id === "fal-ai/veo3.1/fast" || item.id === "bytedance/seedance-2.5/text-to-video" : true);
   const selectModels = relevantModels.length ? relevantModels : fallbackModels.map(item => ({ id: item.id, name: item.label }));
   const effectiveModel = selectModels.some(item => item.id === model) ? model : selectModels[0]?.id || model;
@@ -464,11 +601,15 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   };
   const accept = view === "image" || view === "video" && activeMode === 1 ? "image/png,image/jpeg,image/webp" : view === "video" ? "video/mp4,video/webm" : "";
   const showRepair = view === "video" && activeMode === 2;
-  const needsReference = view === "image" && activeMode === 1 || view === "video" && (activeMode === 1 || activeMode === 2);
+  const showUpscale = view === "image" && activeMode === 2;
+  const upscaleWorking = showUpscale && Boolean(job && ["queued", "submitting", "running"].includes(job.state));
+  const needsReference = view === "image" && (activeMode === 1 || activeMode === 2) || view === "video" && (activeMode === 1 || activeMode === 2);
   const seedance = effectiveModel.startsWith("bytedance/seedance-2.5/");
   const handleGenerate = () => {
-    if (!draft.trim()) { promptRef.current?.focus(); return; }
-    onSubmit({ modeIndex: activeMode, aspect, quality, duration, audio: generateAudio, modelId: effectiveModel, language, repairStart, repairEnd });
+    if (showUpscale && !preview) { fileRef.current?.click(); return; }
+    if (!showUpscale && !draft.trim()) { promptRef.current?.focus(); return; }
+    onSubmit({ modeIndex: activeMode, aspect, quality, duration, audio: generateAudio, modelId: effectiveModel, language, repairStart, repairEnd,
+      upscale: { factor: upscaleFactor, preset: upscalePreset, outputFormat: upscaleFormat } });
   };
   const handleFile = (event: ChangeEvent<HTMLInputElement>) => { onFile(event); event.currentTarget.value = ""; };
   const handleMetadata = (value: number) => {
@@ -481,7 +622,8 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   return (
     <section className="studio-page" aria-labelledby="studio-title">
       <div className="workspace-heading"><div><span className="section-eyebrow">{t.studioEyebrow}</span><h1 id="studio-title">{t.studioTitle[view]}</h1><p>{t.studioDescription[view]}</p></div><span className="page-indicator"><CurrentIcon size={18} aria-hidden="true" />{t.nav[view]}</span></div>
-      <div className="studio-tabs" role="group" aria-label={t.studioTitle[view]}>{tabs.map((name, index) => <button type="button" key={name} aria-pressed={activeMode === index} disabled={view === "image" && index === 2 || view === "audio" && index !== 0} onClick={() => { if (index !== activeMode) { setActiveMode(index); onRemoveFile(); } }}>{name}</button>)}</div>
+      <div className="studio-tabs" role="group" aria-label={t.studioTitle[view]}>{tabs.map((name, index) => <button type="button" key={name} aria-pressed={activeMode === index} disabled={view === "audio" && index === 1} onClick={() => { if (index !== activeMode) { setActiveMode(index); onRemoveFile(); } }}>{name}</button>)}</div>
+      {view === "audio" && activeMode === 2 ? <TranscriptionPanel locale={locale} signedIn={signedIn} onLogin={onLogin} /> : <>
       <div className="studio-layout">
         <div className="canvas-column" ref={canvasRef}>
           <div className="canvas-top"><strong>{t.canvas}</strong>{selectedAsset ? <button type="button" className="canvas-return" onClick={() => setSelectedAssetId(null)}>{t.mediaLibraryBack}</button> : <span>{preview ? t.localPreview : t.canvasReady}</span>}</div>
@@ -493,32 +635,38 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
               : job && ["queued", "submitting", "running"].includes(job.state) ? <div className="job-status"><span className="job-spinner" aria-hidden="true" /><strong>{job.state === "running" ? t.generationRunning : t.generationQueued}</strong><p>{t.generationHint}</p></div>
               : job?.state === "failed" ? <div className="job-status"><X size={27} aria-hidden="true" /><strong>{t.generationFailed}</strong><p>{job.errorCode || jobError}</p></div>
               : job?.state === "cancelled" ? <div className="job-status"><X size={27} aria-hidden="true" /><strong>{t.generationCancelled}</strong></div> : null}
-            {!preview && !job && <div className="canvas-empty"><span className="canvas-empty-icon"><CurrentIcon size={30} aria-hidden="true" /></span><strong>{t.canvasReady}</strong><p>{view === "audio" ? t.audioCanvasHint : needsReference ? t.referenceHint : t.addReference}</p>{needsReference && <button type="button" onClick={() => fileRef.current?.click()}><Upload size={18} aria-hidden="true" />{t.dropFile}</button>}</div>}
+            {!preview && !job && <div className="canvas-empty"><span className="canvas-empty-icon"><CurrentIcon size={30} aria-hidden="true" /></span><strong>{t.canvasReady}</strong><p>{view === "audio" ? t.audioCanvasHint : showUpscale ? t.upscaleDescription : needsReference ? t.referenceHint : t.addReference}</p>{needsReference && <button type="button" onClick={() => fileRef.current?.click()}><Upload size={18} aria-hidden="true" />{t.dropFile}</button>}</div>}
           </div>
           {jobError && <div className="studio-error" role="alert">{jobError}</div>}
            {job && <div className="cost-note">{job.costEstimateMicrosUsd !== null && job.costEstimateMicrosUsd !== undefined ? `${t.priceEstimate}: $${(job.costEstimateMicrosUsd / 1_000_000).toFixed(3)} USD` : t.noPriceEstimate}</div>}
            {showRepair && <div className="timeline"><div className="timeline-header"><span><Clock3 size={15} aria-hidden="true" />00:00</span><span>{Math.floor(clipDuration / 60).toString().padStart(2, "0")}:{(clipDuration % 60).toString().padStart(2, "0")}</span></div><div className="timeline-track"><div className="timeline-selection" style={{ insetInlineStart: `${repairStart / clipDuration * 100}%`, width: `${Math.max(2, (repairEnd - repairStart) / clipDuration * 100)}%` }} /></div><span className="timeline-caption">{t.repairHint}</span></div>}
           {view === "audio" && <div className="canvas-footnote"><AudioLines size={17} aria-hidden="true" />{t.audioModeHint}</div>}
            {view === "image" && activeMode === 1 && <div className="canvas-footnote"><Layers3 size={17} aria-hidden="true" />{t.imageModeHint}</div>}
+           {showUpscale && <div className="canvas-footnote"><Layers3 size={17} aria-hidden="true" />{t.upscaleModeHint}</div>}
         </div>
         <aside className="inspector" aria-label={t.settings}>
            <div className="inspector-heading"><span><SlidersHorizontal size={19} aria-hidden="true" />{t.input}</span>{needsReference && <button type="button" className="inspector-icon" aria-label={t.attach} onClick={() => fileRef.current?.click()}><Paperclip size={18} /></button>}</div>
            {needsReference && <input ref={fileRef} className="sr-only" type="file" accept={accept} onChange={handleFile} aria-label={t.dropFile} />}
           {preview && <div className="file-chip"><span title={preview.name}>{preview.name}</span><button type="button" aria-label={t.removeFile} onClick={onRemoveFile}><X size={15} /></button></div>}
-          <label className="field-label" htmlFor="studio-prompt">{t.prompt}</label>
-          <textarea id="studio-prompt" ref={promptRef} className="studio-prompt" dir={directionForText(draft, locale)} value={draft} onChange={event => onDraft(event.target.value)} placeholder={t.promptByView[view]} rows={5} />
+          {!showUpscale && <><label className="field-label" htmlFor="studio-prompt">{t.prompt}</label>
+          <textarea id="studio-prompt" ref={promptRef} className="studio-prompt" dir={directionForText(draft, locale)} value={draft} onChange={event => onDraft(event.target.value)} placeholder={t.promptByView[view]} rows={5} /></>}
           <div className="inspector-divider" />
           <div className="inspector-heading subtle"><span>{t.settings}</span></div>
           <div className="form-field"><label htmlFor="studio-model">{t.model}</label><div className="select-shell"><select id="studio-model" value={effectiveModel} onChange={event => onModel(event.target.value)} disabled={!selectModels.length}>{selectModels.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</select><ChevronDown size={16} aria-hidden="true" /></div></div>
-           {view !== "audio" && effectiveModel !== "nano-banana-2" && <div className="form-field"><label htmlFor="aspect-ratio">{t.aspectRatio}</label><div className="select-shell"><select id="aspect-ratio" value={view === "video" && !seedance ? aspect === "9:16" ? "9:16" : "16:9" : aspect} onChange={event => setAspect(event.target.value)}>{seedance && <option value="auto">{t.automatic}</option>}{seedance && <option value="21:9">21:9</option>}<option value="16:9">16:9</option>{(view === "image" || seedance) && <option value="1:1">1:1</option>}{(view === "image" || seedance) && <option value="4:3">4:3</option>}{seedance && <option value="3:4">3:4</option>}<option value="9:16">9:16</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
-           {(view === "video" && !showRepair || view === "image" && effectiveModel !== "nano-banana-2") && <div className="form-field"><label htmlFor="media-quality">{t.quality}</label><div className="select-shell"><select id="media-quality" value={seedance ? quality : quality === "low" ? "standard" : quality} onChange={event => setQuality(event.target.value)}>{seedance && <option value="low">480p</option>}<option value="standard">{seedance ? "720p" : t.standard}</option><option value="high">{seedance ? "1080p" : t.high}</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
+           {view !== "audio" && !showUpscale && effectiveModel !== "nano-banana-2" && <div className="form-field"><label htmlFor="aspect-ratio">{t.aspectRatio}</label><div className="select-shell"><select id="aspect-ratio" value={view === "video" && !seedance ? aspect === "9:16" ? "9:16" : "16:9" : aspect} onChange={event => setAspect(event.target.value)}>{seedance && <option value="auto">{t.automatic}</option>}{seedance && <option value="21:9">21:9</option>}<option value="16:9">16:9</option>{(view === "image" || seedance) && <option value="1:1">1:1</option>}{(view === "image" || seedance) && <option value="4:3">4:3</option>}{seedance && <option value="3:4">3:4</option>}<option value="9:16">9:16</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
+           {!showUpscale && (view === "video" && !showRepair || view === "image" && effectiveModel !== "nano-banana-2") && <div className="form-field"><label htmlFor="media-quality">{t.quality}</label><div className="select-shell"><select id="media-quality" value={seedance ? quality : quality === "low" ? "standard" : quality} onChange={event => setQuality(event.target.value)}>{seedance && <option value="low">480p</option>}<option value="standard">{seedance ? "720p" : t.standard}</option><option value="high">{seedance ? "1080p" : t.high}</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
+          {showUpscale && <>
+            <div className="form-field"><label htmlFor="upscale-factor">{t.upscaleFactor}</label><div className="select-shell"><select id="upscale-factor" value={upscaleFactor} onChange={event => setUpscaleFactor(Number(event.target.value) as 2 | 4)}><option value={2}>2×</option><option value={4}>4×</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>
+            <div className="form-field"><label htmlFor="upscale-preset">{t.upscalePreset}</label><div className="select-shell"><select id="upscale-preset" value={upscalePreset} onChange={event => setUpscalePreset(event.target.value as UpscalePreset)}>{upscalePresets.map(preset => <option value={preset} key={preset}>{preset}</option>)}</select><ChevronDown size={16} aria-hidden="true" /></div></div>
+            <div className="form-field"><label htmlFor="upscale-format">{t.upscaleFormat}</label><div className="select-shell"><select id="upscale-format" value={upscaleFormat} onChange={event => setUpscaleFormat(event.target.value as "jpeg" | "png")}><option value="jpeg">JPEG</option><option value="png">PNG</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>
+          </>}
            {view === "video" && !showRepair && <div className="form-field"><label htmlFor="video-duration">{t.duration}</label><div className="select-shell"><select id="video-duration" value={seedance ? duration : typeof duration === "number" && [4, 6, 8].includes(duration) ? duration : 8} onChange={event => setDuration(event.target.value === "auto" ? "auto" : Number(event.target.value))}>{seedance && <option value="auto">{t.automaticDuration}</option>}{(seedance ? [4, 6, 8, 10, 15, 20, 30] : [4, 6, 8]).map(value => <option key={value} value={value}>{value} {t.seconds}</option>)}</select><ChevronDown size={16} aria-hidden="true" /></div></div>}
            {view === "video" && !showRepair && <label className="toggle-field"><input type="checkbox" checked={generateAudio} onChange={event => setGenerateAudio(event.target.checked)} /><span>{t.videoAudio}</span></label>}
           {view === "audio" && <div className="form-field"><label htmlFor="audio-language">{t.language}</label><div className="select-shell"><select id="audio-language" value={language} onChange={event => setLanguage(event.target.value)}><option value="auto">{t.automatic}</option><option value="en">{t.english}</option><option value="fa">{t.persian}</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
           {showRepair && <div className="repair-controls"><div className="repair-title"><Scissors size={17} aria-hidden="true" /><strong>{t.repairRange}</strong></div><p>{preview ? t.repairHint : t.noClip}</p><div className="repair-fields"><div className="form-field"><label htmlFor="repair-start">{t.startTime}</label><div className="input-suffix"><input id="repair-start" type="number" min={0} max={Math.max(0, repairEnd - 1)} step={0.1} value={repairStart} onChange={event => setRepairStart(Math.max(0, Math.min(repairEnd - .1, Number(event.target.value) || 0)))} /><span>s</span></div></div><div className="form-field"><label htmlFor="repair-end">{t.endTime}</label><div className="input-suffix"><input id="repair-end" type="number" min={repairStart + .1} max={clipDuration} step={0.1} value={repairEnd} onChange={event => setRepairEnd(Math.min(clipDuration, Math.max(repairStart + .1, Number(event.target.value) || repairStart + .1)))} /><span>s</span></div></div></div></div>}
           <div className="inspector-spacer" />
-            <button className="primary-action" type="button" onClick={handleGenerate} disabled={busy || view === "image" && activeMode === 2 || view === "audio" && activeMode !== 0}>{busy ? t.generationQueued : showRepair ? t.repairRange : t.generate}<ArrowRight size={17} aria-hidden="true" /></button>
-            {(view === "image" && activeMode === 2 || view === "audio" && activeMode !== 0) && <p className="inspector-note">{t.unsupportedOperation}</p>}
+            <button className="primary-action" type="button" onClick={handleGenerate} disabled={busy || upscaleWorking || view === "audio" && activeMode !== 0}>{busy || upscaleWorking ? t.generationQueued : showUpscale ? t.upscaleAction : showRepair ? t.repairRange : t.generate}<ArrowRight size={17} aria-hidden="true" /></button>
+            {view === "audio" && activeMode !== 0 && <p className="inspector-note">{t.unsupportedOperation}</p>}
         </aside>
       </div>
       {signedIn && <section className="media-library" aria-labelledby="media-library-title">
@@ -541,6 +689,7 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
         {libraryMoreError && <div className="media-library-notice" role="alert"><span>{libraryMoreError}</span><button type="button" onClick={() => void loadMoreLibrary()}>{t.retry}</button></div>}
         {libraryCursor && <div className="media-library-more"><button type="button" className="outline-action" onClick={() => void loadMoreLibrary()} disabled={libraryLoading || libraryMoreLoading}>{libraryMoreLoading ? t.mediaLibraryLoadingMore : t.mediaLibraryLoadMore}</button></div>}
       </section>}
+      </>}
     </section>
   );
 }
@@ -601,6 +750,7 @@ export default function WorkspaceApp() {
   const [theme, setTheme] = useState<Theme>("light");
   const [view, setView] = useState<View>("chat");
   const [drafts, setDrafts] = useState<Drafts>(emptyDrafts);
+  const [draftsUserId, setDraftsUserId] = useState<string | null>(null);
   const [models, setModels] = useState<Models>(defaultModels);
   const [studioMode, setStudioMode] = useState(0);
   const [hydrated, setHydrated] = useState(false);
@@ -632,10 +782,12 @@ export default function WorkspaceApp() {
   const [mediaErrors, setMediaErrors] = useState<Partial<Record<MediaView, string>>>({});
   const [mediaSubmitting, setMediaSubmitting] = useState<Partial<Record<MediaView, boolean>>>({});
   const mediaSubmittingRef = useRef<Partial<Record<MediaView, boolean>>>({});
+  const upscaleSubmissionRef = useRef<{ identity: string; key: string } | null>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const pendingRef = useRef(false);
+  const authEpochRef = useRef(0);
 
   useEffect(() => {
     const savedLocale = readStorage("ailoom.locale");
@@ -644,10 +796,10 @@ export default function WorkspaceApp() {
     if (savedLocale === "en" || savedLocale === "fa") setLocale(savedLocale);
     if (savedTheme === "light" || savedTheme === "dark") setTheme(savedTheme);
     if (savedImageChatModel) setImageChatModel(savedImageChatModel);
-    try {
-      const savedDrafts = JSON.parse(readStorage("ailoom.drafts") ?? "{}") as Partial<Drafts>;
-      setDrafts({ ...emptyDrafts, ...Object.fromEntries(views.map(item => [item, typeof savedDrafts[item] === "string" ? savedDrafts[item] : ""])) });
-    } catch { /* Ignore invalid local data. */ }
+    // Earlier builds used a shared key. It could expose one account's prompt to
+    // another account or a signed-out visitor, so it must never be restored.
+    try { window.localStorage.removeItem("ailoom.drafts"); }
+    catch { /* Private browsing can disable storage. */ }
     try {
       const savedModels = JSON.parse(readStorage("ailoom.models") ?? "{}") as Partial<Models>;
       setModels({ ...defaultModels, ...Object.fromEntries(views.map(item => [item, item === "chat" && typeof savedModels[item] === "string" ? savedModels[item] : modelOptions[item].some(option => option.id === savedModels[item]) ? savedModels[item] : defaultModels[item]])) });
@@ -670,15 +822,30 @@ export default function WorkspaceApp() {
     writeStorage("ailoom.locale", locale);
     writeStorage("ailoom.theme", theme);
   }, [locale, theme, hydrated]);
-  useEffect(() => { if (hydrated) writeStorage("ailoom.drafts", JSON.stringify(drafts)); }, [drafts, hydrated]);
+  useEffect(() => {
+    if (!hydrated || !user || draftsUserId !== user.id) return;
+    try { writeUserDrafts(window.localStorage, user.id, drafts); }
+    catch { /* Private browsing can disable storage. */ }
+  }, [drafts, hydrated, user, draftsUserId]);
   useEffect(() => { if (hydrated) writeStorage("ailoom.models", JSON.stringify(models)); }, [models, hydrated]);
   useEffect(() => { if (hydrated) writeStorage("ailoom.imageChatModel", imageChatModel); }, [imageChatModel, hydrated]);
   useEffect(() => {
     let active = true;
+    const epoch = authEpochRef.current;
     fetch("/api/auth/get-session", { credentials: "same-origin", cache: "no-store" })
       .then(async response => response.ok ? response.json() : null)
-      .then(body => { if (active) setUser(sessionUserFromPayload(body)); })
-      .catch(() => { if (active) setUser(null); });
+      .then(body => {
+        if (!active || epoch !== authEpochRef.current) return;
+        const sessionUser = sessionUserFromPayload(body);
+        if (sessionUser) {
+          const saved = loadUserDrafts(sessionUser.id);
+          setDrafts(current => ({ ...saved, ...Object.fromEntries(views.map(view =>
+            [view, current[view] || saved[view]])) }));
+          setDraftsUserId(sessionUser.id);
+        }
+        setUser(sessionUser);
+      })
+      .catch(() => { if (active && epoch === authEpochRef.current) setUser(null); });
     return () => { active = false; };
   }, []);
   useEffect(() => {
@@ -833,7 +1000,7 @@ export default function WorkspaceApp() {
         if (!active || !Array.isArray(body?.jobs)) return;
         const latest: Partial<Record<MediaView, MediaJob>> = {};
         for (const item of body.jobs) {
-          const kind: unknown = item?.kind === "edit"
+          const kind: unknown = item?.kind === "upscale" ? "image" : item?.kind === "edit"
             ? item?.providerModel === "fal-ai/qwen-image-edit" ? "image" : item?.providerModel === "fal-ai/ltx-2.3-quality/inpaint" ? "video" : null
             : item?.kind;
           if ((kind !== "image" && kind !== "video" && kind !== "audio") || latest[kind]) continue;
@@ -1030,6 +1197,30 @@ export default function WorkspaceApp() {
     if (mode === "image" && attachment?.mime === "application/pdf") setAttachment(null);
   };
 
+  const clearPrivateWorkspace = () => {
+    setDrafts(emptyDrafts());
+    setDraftsUserId(null);
+    setAttachment(null);
+    setPreview(null);
+    setMediaJobs({});
+    setMediaErrors({});
+    setMediaSubmitting({});
+    mediaSubmittingRef.current = {};
+    upscaleSubmissionRef.current = null;
+    setConversations([]);
+    setHistoryLoading(false);
+    setSelectedConversationId(null);
+    setMessages([]);
+    setMessagesLoading(false);
+    setChatPending(false);
+    setChatError("");
+    setSpecialistId(null);
+    setChatMode("text");
+    setWebSearch(false);
+    setLoginDraft("");
+    pendingRef.current = false;
+  };
+
   const authenticate = async (input: { mode: "sign-in" | "sign-up"; email: string; password: string; name: string }) => {
     if (authBusy) return;
     setAuthBusy(true);
@@ -1050,6 +1241,17 @@ export default function WorkspaceApp() {
         nextUser = sessionResponse.ok ? sessionUserFromPayload(await sessionResponse.json()) : null;
       }
       if (!nextUser) throw new Error(t.sessionError);
+      authEpochRef.current += 1;
+      const switchingAccount = Boolean(user && user.id !== nextUser.id);
+      const saved = loadUserDrafts(nextUser.id);
+      if (switchingAccount) {
+        try { clearStoredDrafts(window.localStorage); }
+        catch { /* Private browsing can disable storage. */ }
+        clearPrivateWorkspace();
+      }
+      setDrafts(switchingAccount ? saved : { ...saved, ...Object.fromEntries(views.map(view =>
+        [view, drafts[view] || saved[view]])) });
+      setDraftsUserId(nextUser.id);
       setUser(nextUser);
       closeLogin();
       if (loginReturnView !== view) navigate(loginReturnView);
@@ -1064,12 +1266,21 @@ export default function WorkspaceApp() {
     try {
       const response = await fetch("/api/auth/sign-out", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" });
       if (!response.ok) throw new Error(await responseError(response));
-      try { if (user) window.localStorage.removeItem(`ailoom.explore.run.v1.${user.id}`); }
+      authEpochRef.current += 1;
+      try {
+        clearStoredDrafts(window.localStorage);
+        if (user) window.localStorage.removeItem(`ailoom.explore.run.v1.${user.id}`);
+        window.localStorage.removeItem("ailoom.models");
+        window.localStorage.removeItem("ailoom.imageChatModel");
+      }
       catch { /* Private browsing can disable storage. */ }
+      clearPrivateWorkspace();
+      setModels(defaultModels);
+      setImageChatModel("google/gemini-3.1-flash-image");
       setUser(null);
-      setSelectedConversationId(null);
-      setMessages([]);
-      navigate("chat");
+      // Reload drops any in-flight chat or media callbacks that could repopulate
+      // the previous account's state after its session cookie is removed.
+      window.location.replace("/");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : t.sessionError);
     }
@@ -1077,17 +1288,19 @@ export default function WorkspaceApp() {
 
   const startGeneration = async (target: MediaView, options: StudioRequestOptions) => {
     const imageEdit = target === "image" && options.modeIndex === 1;
+    const imageUpscale = target === "image" && options.modeIndex === 2;
     const referenceVideo = target === "video" && options.modeIndex === 1;
     const videoRepair = target === "video" && options.modeIndex === 2;
     const textGeneration = options.modeIndex === 0;
-    if ((!imageEdit && !referenceVideo && !videoRepair && !textGeneration) || (textGeneration && preview) || ((imageEdit || referenceVideo || videoRepair) && !preview)) {
+    if (imageUpscale && mediaJobs.image && ["queued", "submitting", "running"].includes(mediaJobs.image.state)) return;
+    if ((!imageEdit && !imageUpscale && !referenceVideo && !videoRepair && !textGeneration) || (textGeneration && preview) || ((imageEdit || imageUpscale || referenceVideo || videoRepair) && !preview)) {
       setMediaErrors(previous => ({ ...previous, [target]: t.unsupportedOperation }));
       return;
     }
     if (!user) { openLogin(drafts[target], target); return; }
     const prompt = drafts[target].trim();
-    if (!prompt) return;
-    const operation = imageEdit ? "image_edit" : referenceVideo ? options.modelId === "fal-ai/veo3.1/fast/image-to-video" ? "image_to_video" : "reference_to_video" : videoRepair ? "temporal_inpaint" : target === "image" ? "text_to_image" : target === "video" ? "text_to_video" : "text_to_speech";
+    if (!prompt && !imageUpscale) return;
+    const operation = imageUpscale ? "image_upscale" : imageEdit ? "image_edit" : referenceVideo ? options.modelId === "fal-ai/veo3.1/fast/image-to-video" ? "image_to_video" : "reference_to_video" : videoRepair ? "temporal_inpaint" : target === "image" ? "text_to_image" : target === "video" ? "text_to_video" : "text_to_speech";
     const supported = mediaModels.length ? mediaModels.some(item => item.id === options.modelId && item.operations.includes(operation))
       : modelOptions[target].some(item => item.id === options.modelId);
     if (!supported && !videoRepair) {
@@ -1095,7 +1308,7 @@ export default function WorkspaceApp() {
       return;
     }
     let payload: Record<string, unknown>;
-    if (imageEdit || referenceVideo || videoRepair) {
+    if (imageEdit || imageUpscale || referenceVideo || videoRepair) {
       payload = {};
     } else if (target === "image") {
       payload = { modelId: options.modelId, operation: "text_to_image", prompt };
@@ -1137,10 +1350,11 @@ export default function WorkspaceApp() {
     setMediaErrors(previous => ({ ...previous, [target]: "" }));
     try {
       let endpoint = "/api/generations";
-      if (imageEdit || referenceVideo || videoRepair) {
+      let upscaleKey: string | null = null;
+      if (imageEdit || imageUpscale || referenceVideo || videoRepair) {
         const source = preview?.file;
         if (!source) throw new Error(t.unsupportedOperation);
-        if ((imageEdit || referenceVideo) && !["image/png", "image/jpeg", "image/webp"].includes(source.type)) throw new Error(t.unsupportedOperation);
+        if ((imageEdit || imageUpscale || referenceVideo) && !["image/png", "image/jpeg", "image/webp"].includes(source.type)) throw new Error(imageUpscale ? t.upscaleUnsupportedFile : t.unsupportedOperation);
         if (videoRepair && !["video/mp4", "video/webm"].includes(source.type)) throw new Error(t.unsupportedOperation);
         let sourceAssetId = preview?.assetId;
         if (!sourceAssetId) {
@@ -1154,12 +1368,18 @@ export default function WorkspaceApp() {
           const savedId = sourceAssetId;
           setPreview(current => current?.url === preview?.url ? { ...current, assetId: savedId } : current);
         }
-        if (imageEdit || referenceVideo) {
+        if (imageEdit || imageUpscale || referenceVideo) {
           const access = await fetch(`/api/assets/${encodeURIComponent(sourceAssetId)}`, { method: "POST", credentials: "same-origin" });
           if (!access.ok) throw new Error(await responseError(access));
           const signed = await access.json();
           if (typeof signed?.url !== "string" || !signed.url.startsWith("https://")) throw new Error(t.unsupportedOperation);
-          if (imageEdit) {
+          if (imageUpscale) {
+            payload = upscaleRequest(signed.url, options.upscale);
+            const identity = upscaleRequestIdentity(sourceAssetId, options.upscale);
+            const previous = upscaleSubmissionRef.current;
+            upscaleKey = previous?.identity === identity ? previous.key : crypto.randomUUID();
+            upscaleSubmissionRef.current = { identity, key: upscaleKey };
+          } else if (imageEdit) {
             const sizes: Record<string, string> = { "16:9": "landscape_16_9", "9:16": "portrait_16_9", "4:3": "landscape_4_3", "1:1": options.quality === "high" ? "square_hd" : "square" };
             payload = { modelId: "fal-ai/qwen-image-edit", operation: "image_edit", prompt,
               imageUrl: signed.url, imageSize: sizes[options.aspect] ?? "landscape_16_9" };
@@ -1182,13 +1402,15 @@ export default function WorkspaceApp() {
       }
       const response = await fetch(endpoint, {
         method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+        headers: { "Content-Type": "application/json", ...(upscaleKey ? { "Idempotency-Key": upscaleKey } : {}) },
+        body: JSON.stringify(payload)
       });
       if (!response.ok) throw new Error(await responseError(response));
       const job = mediaJobFromPayload(await response.json());
       if (!job) throw new Error(t.generationNotReady);
       setMediaJobs(previous => ({ ...previous, [target]: job }));
-      if (imageEdit || referenceVideo || videoRepair) setPreview(null);
+      if (imageUpscale) upscaleSubmissionRef.current = null;
+      if (imageEdit || imageUpscale || referenceVideo || videoRepair) setPreview(null);
     } catch (error) {
       setMediaErrors(previous => ({ ...previous, [target]: error instanceof Error ? error.message : t.generationFailed }));
     } finally {
@@ -1204,7 +1426,7 @@ export default function WorkspaceApp() {
         {view === "chat" && (user
           ? <ChatWorkspace locale={locale} user={user} conversations={conversations} historyLoading={historyLoading} selectedId={selectedConversationId} messages={messages} messageLoading={messagesLoading} pending={chatPending} error={chatError} prompt={drafts.chat} onPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} onModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSend={() => void sendChat()} onSelect={id => void selectConversation(id)} onNew={newConversation} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />
           : <ChatLanding locale={locale} prompt={drafts.chat} setPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} setModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSubmit={() => void sendChat()} onNavigate={navigate} onStarter={useWorkflow} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />)}
-        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} availableModels={mediaModels.filter(item => item.outputKind === view && (view !== "video" || ["fal-ai/veo3.1/fast", "fal-ai/veo3.1/fast/image-to-video", "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/reference-to-video", "fal-ai/ltx-2.3-quality/inpaint"].includes(item.id)))} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} />}
+        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} availableModels={mediaModels.filter(item => item.outputKind === view && (view !== "video" || ["fal-ai/veo3.1/fast", "fal-ai/veo3.1/fast/image-to-video", "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/reference-to-video", "fal-ai/ltx-2.3-quality/inpaint"].includes(item.id)))} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} onLogin={() => openLogin("", view)} />}
         {view === "explore" && <ConnectedExplorePage locale={locale} user={user} onUse={useWorkflow} onLogin={() => openLogin()} />}
         {view === "specialists" && <ConnectedSpecialistsPage locale={locale} onAsk={askSpecialist} />}
       </main>
