@@ -278,6 +278,12 @@ html[lang="fa"] .workspace-heading h1 { letter-spacing: -.035em; }
 .canvas-empty button, .outline-action { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 44px; padding: 0 16px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); color: var(--ink); font-size: 14px; font-weight: 670; }
 .canvas-empty button:hover, .outline-action:hover { border-color: var(--accent); color: var(--accent); }
 .uploaded-media { position: relative; z-index: 1; display: block; max-width: 100%; max-height: 500px; object-fit: contain; }
+.frame-pair { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; width: min(100%, 850px); padding: 20px; }
+.frame-card { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.frame-card strong { font-size: 13px; color: var(--secondary); }
+.frame-card img, .frame-card button { width: 100%; aspect-ratio: 16 / 9; border: 1px solid var(--line); border-radius: 10px; object-fit: contain; background: var(--surface); }
+.frame-card button { padding: 12px; color: var(--secondary); cursor: pointer; }
+.frame-card button:hover { color: var(--ink); border-color: var(--accent); }
 .studio-canvas-video .uploaded-media { width: 100%; max-height: 620px; background: #0b0c0e; }
 .uploaded-audio { position: relative; z-index: 1; display: grid; justify-items: center; gap: 19px; width: min(80%, 500px); padding: 30px 25px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--accent); }
 .uploaded-audio strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 15px; }
@@ -554,6 +560,7 @@ html[data-theme="dark"] .auth-form .auth-error { background: #3e292c; color: #fa
   .studio-tabs { overflow-x: auto; scrollbar-width: none; }
   .studio-tabs button { flex: none; }
   .studio-canvas { min-height: 340px; margin: 11px; }
+  .frame-pair { grid-template-columns: 1fr; max-width: 440px; }
   .canvas-empty { max-width: 85%; }
   .browse-page .workspace-heading { display: block; }
   .browse-page .outline-action { margin-top: 20px; }

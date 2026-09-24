@@ -11,7 +11,7 @@ const maskUrl = "https://assets.example.com/mask.mp4";
 
 test("catalog exposes only documented model IDs and filters by operation", () => {
   const models = listMediaModels();
-  assert.equal(models.length, 11);
+  assert.equal(new Set(models.map(model => model.id)).size, models.length);
   assert.deepEqual(listMediaModels("image_upscale").map(model => model.id), [
     "topaz/upscale/image/precision"
   ]);
@@ -297,4 +297,75 @@ test("Kie task failures do not expose raw provider failure messages", async () =
   assert.equal(task.state, "failed");
   assert.equal(task.failureCode, "provider_failed");
   assert.equal(JSON.stringify(task).includes("secret"), false);
+});
+
+test("music catalog and payloads follow the two documented fal schemas", () => {
+  assert.deepEqual(listMediaModels("text_to_music").map(model => model.id), [
+    "elevenlabs/music/v2", "fal-ai/stable-audio-3/small/music/text-to-audio"
+  ]);
+  const eleven = prepareMediaRequest({
+    modelId: "elevenlabs/music/v2", operation: "text_to_music",
+    prompt: "  An original Persian pop chorus  ", durationSec: 120,
+    forceInstrumental: false
+  });
+  assert.deepEqual(eleven.providerInput, {
+    prompt: "An original Persian pop chorus", music_length_ms: 120_000,
+    force_instrumental: false, output_format: "mp3_48000_192"
+  });
+  assert.equal(eleven.priceEstimate?.amountUsd, 1.2);
+  assert.equal(prepareMediaRequest({
+    modelId: "elevenlabs/music/v2", operation: "text_to_music",
+    prompt: "A string quartet", durationSec: 30, forceInstrumental: true
+  }).priceEstimate?.amountUsd, 0.6);
+
+  const stable = prepareMediaRequest({
+    modelId: "fal-ai/stable-audio-3/small/music/text-to-audio",
+    operation: "text_to_music", prompt: "Minimal piano", durationSec: 60
+  });
+  assert.deepEqual(stable.providerInput, {
+    prompt: "Minimal piano", duration: 60, output_format: "mp3", bitrate: "192k"
+  });
+  assert.equal(stable.priceEstimate, null);
+  for (const invalid of [
+    { modelId: "elevenlabs/music/v2", durationSec: 601 },
+    { modelId: "fal-ai/stable-audio-3/small/music/text-to-audio", durationSec: 121 },
+    { modelId: "fal-ai/stable-audio-3/small/music/text-to-audio", forceInstrumental: true }
+  ]) {
+    assert.throws(() => prepareMediaRequest({
+      operation: "text_to_music", prompt: "A short tune", ...invalid
+    }), (error: unknown) => error instanceof MediaRequestError && error.code === "invalid_input");
+  }
+});
+
+test("music request submits once through fal queue and imports an audio result", async () => {
+  const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+  const fetcher: typeof fetch = async (url, init) => {
+    const address = String(url);
+    calls.push({ url: address, method: init?.method ?? "GET",
+      ...(init?.body ? { body: JSON.parse(String(init.body)) as Record<string, unknown> } : {}) });
+    if (init?.method === "POST") return Response.json({ request_id: "music_1", queue_position: 0 });
+    if (address.endsWith("/status?logs=0")) {
+      return Response.json({ request_id: "music_1", status: "COMPLETED" });
+    }
+    return Response.json({ audio: {
+      url: "https://cdn.example.com/song.mp3", content_type: "audio/mpeg"
+    } });
+  };
+  const submitted = await submitMediaRequest({
+    modelId: "elevenlabs/music/v2", operation: "text_to_music",
+    prompt: "Original jazz trio", durationSec: 30, forceInstrumental: true
+  }, { fetcher, apiKeys: { fal: "test-key" } });
+  const result = await getMediaTask({
+    modelId: submitted.modelId, providerTaskId: submitted.providerTaskId
+  }, { fetcher, apiKeys: { fal: "test-key" } });
+  assert.equal(calls[0].url, "https://queue.fal.run/elevenlabs/music/v2");
+  assert.equal(calls[1].url, "https://queue.fal.run/elevenlabs/music/requests/music_1/status?logs=0");
+  assert.equal(calls[2].url, "https://queue.fal.run/elevenlabs/music/requests/music_1");
+  assert.deepEqual(calls[0].body, {
+    prompt: "Original jazz trio", music_length_ms: 30_000,
+    force_instrumental: true, output_format: "mp3_48000_192"
+  });
+  assert.deepEqual(result.assets, [{
+    kind: "audio", url: "https://cdn.example.com/song.mp3", contentType: "audio/mpeg"
+  }]);
 });

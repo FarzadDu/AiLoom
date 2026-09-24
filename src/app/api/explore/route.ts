@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getCurrentUser, mutationOriginAllowed } from "@/server/auth/access";
 import { createExploreTemplate, ensureStarterTemplates, listExploreTemplates, templateDefinitionSchema } from "@/server/content/templates";
+import { CONTENT_JSON_LIMIT, parseBoundedJson } from "@/server/storage/bounded-json";
 
 export const runtime = "nodejs";
 
@@ -31,8 +32,8 @@ export async function POST(request: Request) {
   const current = await getCurrentUser(request.headers);
   if (!current) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
-  const input = createInput.safeParse(await request.json().catch(() => null));
-  if (!input.success) return Response.json({ error: "Invalid template." }, { status: 400 });
+  const input = await parseBoundedJson(request, createInput, CONTENT_JSON_LIMIT, "Invalid template.");
+  if (!input.success) return input.response;
   return Response.json({ template: createExploreTemplate(current.id, input.data) }, { status: 201 });
 }
 

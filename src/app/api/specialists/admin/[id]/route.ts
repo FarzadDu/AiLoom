@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getCurrentAdmin, mutationOriginAllowed } from "@/server/auth/access";
 import { listSpecialistsForAdmin, updateSpecialistProfile } from "@/server/content/specialists";
+import { CONTENT_JSON_LIMIT, parseBoundedJson } from "@/server/storage/bounded-json";
 
 export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
@@ -19,8 +20,8 @@ export async function PATCH(request: Request, context: Context) {
   const admin = await getCurrentAdmin(request.headers);
   if (!admin) return Response.json({ error: "Forbidden." }, { status: 403 });
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
-  const input = updateInput.safeParse(await request.json().catch(() => null));
-  if (!input.success) return Response.json({ error: "Invalid specialist update." }, { status: 400 });
+  const input = await parseBoundedJson(request, updateInput, CONTENT_JSON_LIMIT, "Invalid specialist update.");
+  if (!input.success) return input.response;
   const { id } = await context.params;
   if (input.data.slug && listSpecialistsForAdmin(admin.id)
     .some((item) => item.id !== id && item.slug === input.data.slug)) {

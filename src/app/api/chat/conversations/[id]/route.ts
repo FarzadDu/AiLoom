@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getCurrentUser, mutationOriginAllowed } from "@/server/auth/access";
 import { deleteConversation, getConversation, listMessages, updateConversation } from "@/server/content/chat";
+import { CONTENT_JSON_LIMIT, parseBoundedJson } from "@/server/storage/bounded-json";
 
 export const runtime = "nodejs";
 
@@ -22,9 +23,9 @@ export async function PATCH(request: Request, context: Context) {
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
   const { id } = await context.params;
   const schema = z.object({ title: z.string().trim().min(1).max(160).optional(), modelId: z.string().min(1).max(200).optional() }).strict();
-  let input: z.infer<typeof schema>;
-  try { input = schema.parse(await request.json()); } catch { return Response.json({ error: "Invalid update." }, { status: 400 }); }
-  const conversation = updateConversation(current.id, id, input);
+  const input = await parseBoundedJson(request, schema, CONTENT_JSON_LIMIT, "Invalid update.");
+  if (!input.success) return input.response;
+  const conversation = updateConversation(current.id, id, input.data);
   if (!conversation) return Response.json({ error: "Conversation not found." }, { status: 404 });
   return Response.json({ conversation });
 }

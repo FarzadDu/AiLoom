@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
 import type { ExploreTemplate } from "../src/components/content-api";
-import { createWorkflowRun, executeWorkflow, resolveWorkflowPrompt, restoreWorkflowRun, resumeWorkflowRun, validateWorkflowRun } from "../src/components/explore-runner";
+import { createWorkflowRun, executeWorkflow, resolveWorkflowPrompt, restoreWorkflowRun, resumeWorkflowRun, supportsWorkflowModel, validateWorkflowRun } from "../src/components/explore-runner";
 import { STARTER_TEMPLATES } from "../src/server/content/starter-templates";
 
 function template(steps: ExploreTemplate["definition"]["steps"]): ExploreTemplate {
@@ -255,4 +255,34 @@ test("Social launch audio speaks generated words rather than directions", () => 
   assert.ok(scriptIndex >= 0 && voiceIndex === scriptIndex + 1);
   run.steps[scriptIndex] = { id: "voice-script", state: "succeeded", text: "Take the journey with you." };
   assert.equal(resolveWorkflowPrompt(run, voiceIndex), "Take the journey with you.");
+});
+
+test("Explore runs a music step and hides models needing unsupported multi-file controls", async () => {
+  assert.equal(supportsWorkflowModel("audio", "elevenlabs/music/v2"), true);
+  assert.equal(supportsWorkflowModel("audio", "fal-ai/stable-audio-3/small/music/text-to-audio"), true);
+  assert.equal(supportsWorkflowModel("image", "topaz/upscale/image/precision"), false);
+  assert.equal(supportsWorkflowModel("video", "fal-ai/veo3.1/fast/first-last-frame-to-video"), false);
+  const recipe = template([{ id: "music", title: "Score", kind: "audio",
+    modelId: "elevenlabs/music/v2", prompt: "A gentle song for {{subject}}" }]);
+  const run = createWorkflowRun(recipe, "owner-1", { subject: "a kite" }, {});
+  validateWorkflowRun(run);
+  let latest = run;
+  const postedBodies: Record<string, unknown>[] = [];
+  await executeWorkflow(run, {
+    signal: new AbortController().signal,
+    fetcher: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/generations") {
+        postedBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return Response.json({ job: { id: imageJobId, state: "queued" } }, { status: 202 });
+      }
+      return Response.json({ job: { id: imageJobId, state: "succeeded", output: {
+        assets: [{ id: videoId, kind: "audio", url: `/api/assets/${videoId}` }]
+      } } });
+    }) as typeof fetch,
+    onUpdate: value => { latest = value; }
+  });
+  assert.equal(postedBodies[0]?.operation, "text_to_music");
+  assert.equal(postedBodies[0]?.modelId, "elevenlabs/music/v2");
+  assert.equal(latest.status, "succeeded");
+  assert.equal(latest.steps[0].asset?.kind, "audio");
 });

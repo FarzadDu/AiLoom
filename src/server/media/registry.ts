@@ -9,9 +9,11 @@ export type MediaOperation =
   | "image_upscale"
   | "text_to_video"
   | "image_to_video"
+  | "first_last_frame_to_video"
   | "reference_to_video"
   | "temporal_inpaint"
-  | "text_to_speech";
+  | "text_to_speech"
+  | "text_to_music";
 
 export type MediaModel = {
   id: string;
@@ -88,6 +90,15 @@ export const MEDIA_MODELS: readonly MediaModel[] = [
     priceNote: "Published 720p/1080p rate is $0.10/s without audio or $0.15/s with audio; estimate only."
   },
   {
+    id: "fal-ai/veo3.1/fast/first-last-frame-to-video",
+    provider: "fal",
+    name: "Veo 3.1 Fast · First and Last Frame",
+    operations: ["first_last_frame_to_video"],
+    outputKind: "video",
+    docsUrl: "https://fal.ai/models/fal-ai/veo3.1/fast/first-last-frame-to-video/api",
+    priceNote: "Published 720p/1080p rate is $0.10/s without audio or $0.15/s with audio; estimate only."
+  },
+  {
     id: "bytedance/seedance-2.5/text-to-video",
     provider: "fal",
     name: "Seedance 2.5 · Text to Video",
@@ -122,6 +133,24 @@ export const MEDIA_MODELS: readonly MediaModel[] = [
     outputKind: "audio",
     docsUrl: "https://fal.ai/models/fal-ai/elevenlabs/tts/eleven-v3/api",
     priceNote: "Published rate is $0.10 per 1,000 input characters; estimate only."
+  },
+  {
+    id: "elevenlabs/music/v2",
+    provider: "fal",
+    name: "ElevenLabs Music v2",
+    operations: ["text_to_music"],
+    outputKind: "audio",
+    docsUrl: "https://fal.ai/models/elevenlabs/music/v2/api",
+    priceNote: "Published rate is $0.60 per started output minute; final charge may vary by account."
+  },
+  {
+    id: "fal-ai/stable-audio-3/small/music/text-to-audio",
+    provider: "fal",
+    name: "Stable Audio 3 Small Music",
+    operations: ["text_to_music"],
+    outputKind: "audio",
+    docsUrl: "https://fal.ai/models/fal-ai/stable-audio-3/small/music/text-to-audio/api",
+    priceNote: "Fal displays a sample per-audio price; final charge depends on request settings and account."
   }
 ];
 

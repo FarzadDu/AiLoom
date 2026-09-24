@@ -1,6 +1,7 @@
 import { getCurrentUser, mutationOriginAllowed } from "@/server/auth/access";
 import { createAsset, listAssetsPage, parseAssetCursor } from "@/server/content/assets";
 import { deletePrivateFile, savePrivateFile } from "@/server/storage/private-files";
+import { MultipartBodyError, readBoundedMultipartForm } from "@/server/storage/bounded-form";
 
 export const runtime = "nodejs";
 
@@ -37,15 +38,16 @@ export async function POST(request: Request) {
   const current = await getCurrentUser(request.headers);
   if (!current) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
-  const length = Number(request.headers.get("content-length") || 0);
-  if (length > 100_000_000) return Response.json({ error: "File is too large." }, { status: 413 });
   let file: File;
   try {
-    const form = await request.formData();
+    const form = await readBoundedMultipartForm(request, 101_000_000);
     const value = form.get("file");
     if (!(value instanceof File)) throw new Error("Missing file");
     file = value;
-  } catch {
+  } catch (error) {
+    if (error instanceof MultipartBodyError) {
+      return Response.json({ error: error.message }, { status: error.status });
+    }
     return Response.json({ error: "Choose a file to upload." }, { status: 400 });
   }
   if (file.size === 0 || file.size > 100_000_000) {

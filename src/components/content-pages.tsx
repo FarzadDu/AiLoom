@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { responseError, type SessionUser } from "./chat-api";
 import { resolveTemplatePrompt, specialistsFromPayload, templateFromPayload, templatesFromPayload, type ExploreStep, type ExploreTemplate, type SpecialistProfile } from "./content-api";
 import { copy, modelOptions, specialistCatalog, type Locale, type View } from "./workspace-data";
-import { createWorkflowRun, executeWorkflow, restoreWorkflowRun, resumeWorkflowRun, validateWorkflowRun, type WorkflowAsset, type WorkflowRun } from "./explore-runner";
+import { createWorkflowRun, executeWorkflow, restoreWorkflowRun, resumeWorkflowRun, supportsWorkflowModel, validateWorkflowRun, type WorkflowAsset, type WorkflowRun } from "./explore-runner";
 
 const stepIcons: Record<ExploreStep["kind"], LucideIcon> = {
   chat: MessageCircle, image: ImageIcon, video: Video, audio: Volume2
@@ -330,7 +330,7 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
               <div className="editor-step-head"><strong>{String(index + 1).padStart(2, "0")}</strong><button type="button" aria-label={`${t.workflowRemoveStep} ${index + 1}`} disabled={draft.steps.length === 1} onClick={() => setDraft(previous => previous && { ...previous, steps: previous.steps.filter(item => item.id !== step.id) })}><X size={16} />{t.workflowRemoveStep}</button></div>
               <label className="editor-field"><span>{t.workflowStepTitle}</span><input required maxLength={120} value={step.title} placeholder={t.workflowStepPlaceholder} onChange={event => updateStep(step.id, { title: event.target.value })} /></label>
               <label className="editor-field"><span>{t.workflowStepKind}</span><select value={step.kind} onChange={event => updateStep(step.id, { kind: event.target.value as ExploreStep["kind"], modelId: undefined })}>{(["chat", "image", "video", "audio"] as const).map(kind => <option value={kind} key={kind}>{t.nav[kind]}</option>)}</select></label>
-              <label className="editor-field"><span>{t.workflowStepModel}</span><select value={step.modelId ?? ""} onChange={event => updateStep(step.id, { modelId: event.target.value || undefined })}><option value="">{t.automatic}</option>{modelOptions[step.kind].map(option => <option value={option.id} key={option.id}>{option.label}</option>)}</select></label>
+              <label className="editor-field"><span>{t.workflowStepModel}</span><select value={step.modelId ?? ""} onChange={event => updateStep(step.id, { modelId: event.target.value || undefined })}><option value="">{t.automatic}</option>{modelOptions[step.kind].filter(option => supportsWorkflowModel(step.kind, option.id)).map(option => <option value={option.id} key={option.id}>{option.label}</option>)}</select></label>
               <label className="editor-field"><span>{t.workflowStepPrompt}</span><textarea required maxLength={20000} rows={3} value={step.prompt} placeholder={t.workflowPromptPlaceholder} onChange={event => updateStep(step.id, { prompt: event.target.value })} /></label>
             </div>)}
             {draft.steps.length < 30 && <button className="outline-action editor-add-step" type="button" onClick={() => setDraft(previous => previous && { ...previous, steps: [...previous.steps, newStep()] })}><Plus size={16} />{t.workflowAddStep}</button>}

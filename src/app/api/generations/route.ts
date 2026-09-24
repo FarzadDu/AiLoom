@@ -3,6 +3,7 @@ import { createGenerationJob, GenerationIdempotencyConflictError, listGeneration
 import { prepareMediaRequest, MediaRequestError } from "@/server/media/service";
 import type { JsonValue } from "@/server/content/types";
 import { publicJob } from "@/server/content/public-job";
+import { BoundedJsonError, readBoundedJson } from "@/server/storage/bounded-json";
 import { z } from "zod";
 
 export const runtime = "nodejs";
@@ -11,7 +12,7 @@ function jobKind(operation: string): JobKind {
   if (operation === "text_to_image") return "image";
   if (operation === "image_upscale") return "upscale";
   if (operation === "image_edit" || operation === "temporal_inpaint") return "edit";
-  if (operation === "text_to_speech") return "audio";
+  if (operation === "text_to_speech" || operation === "text_to_music") return "audio";
   return "video";
 }
 
@@ -32,10 +33,11 @@ export async function POST(request: Request) {
   }
   let input: JsonValue;
   try {
-    const raw = await request.text();
-    if (raw.length > 100_000) return Response.json({ error: "Request too large." }, { status: 413 });
-    input = JSON.parse(raw) as JsonValue;
-  } catch {
+    input = await readBoundedJson(request, 100_000) as JsonValue;
+  } catch (error) {
+    if (error instanceof BoundedJsonError && error.status === 413) {
+      return Response.json({ error: "Request too large." }, { status: 413 });
+    }
     return Response.json({ error: "Invalid generation request." }, { status: 400 });
   }
   try {

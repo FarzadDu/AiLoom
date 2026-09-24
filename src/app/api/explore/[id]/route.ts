@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getCurrentUser, mutationOriginAllowed } from "@/server/auth/access";
 import { deleteExploreTemplate, getExploreTemplate, templateDefinitionSchema, updateExploreTemplate } from "@/server/content/templates";
+import { CONTENT_JSON_LIMIT, parseBoundedJson } from "@/server/storage/bounded-json";
 
 export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
@@ -24,8 +25,8 @@ export async function PATCH(request: Request, context: Context) {
   const current = await getCurrentUser(request.headers);
   if (!current) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
-  const input = updateInput.safeParse(await request.json().catch(() => null));
-  if (!input.success) return Response.json({ error: "Invalid template update." }, { status: 400 });
+  const input = await parseBoundedJson(request, updateInput, CONTENT_JSON_LIMIT, "Invalid template update.");
+  if (!input.success) return input.response;
   const { id } = await context.params;
   const template = updateExploreTemplate(current.id, id, input.data);
   if (!template) return Response.json({ error: "Template not found." }, { status: 404 });

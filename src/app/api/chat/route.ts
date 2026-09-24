@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import type { ContentBlock } from "@/server/content/types";
 import { getEnabledSpecialist } from "@/server/content/specialists";
 import { answerWithWebSearch, type WebSearchAnswer } from "@/server/chat/web-search";
+import { parseBoundedJson } from "@/server/storage/bounded-json";
 
 export const runtime = "nodejs";
 
@@ -67,14 +68,9 @@ export async function POST(request: Request) {
   if (!currentUser) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
 
-  let parsed: z.infer<typeof requestSchema>;
-  try {
-    const raw = await request.text();
-    if (raw.length > 100_000) return Response.json({ error: "Request too large." }, { status: 413 });
-    parsed = requestSchema.parse(JSON.parse(raw));
-  } catch {
-    return Response.json({ error: "Invalid chat request." }, { status: 400 });
-  }
+  const body = await parseBoundedJson(request, requestSchema, 100_000, "Invalid chat request.");
+  if (!body.success) return body.response;
+  const parsed = body.data;
   const prompt = parsed.text.trim();
   if (!prompt && !parsed.attachmentIds?.length) {
     return Response.json({ error: "Write a message or attach a file." }, { status: 400 });

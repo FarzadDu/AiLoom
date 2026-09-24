@@ -5,6 +5,7 @@ import { createAsset, deleteAsset, getOwnedAsset } from "@/server/content/assets
 import { appendMessage, createConversation, getConversation } from "@/server/content/chat";
 import { generateImage, type ImageReference } from "@/server/providers/openrouter-image";
 import { deletePrivateFile, mediaPath, savePrivateFile } from "@/server/storage/private-files";
+import { parseBoundedJson } from "@/server/storage/bounded-json";
 
 export const runtime = "nodejs";
 
@@ -20,12 +21,9 @@ export async function POST(request: Request) {
   const current = await getCurrentUser(request.headers);
   if (!current) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
-  let input: z.infer<typeof schema>;
-  try {
-    const raw = await request.text();
-    if (raw.length > 30_000) return Response.json({ error: "Request too large." }, { status: 413 });
-    input = schema.parse(JSON.parse(raw));
-  } catch { return Response.json({ error: "Invalid image request." }, { status: 400 }); }
+  const body = await parseBoundedJson(request, schema, 30_000, "Invalid image request.");
+  if (!body.success) return body.response;
+  const input = body.data;
 
   const existing = input.conversationId ? getConversation(current.id, input.conversationId) : null;
   if (input.conversationId && !existing) return Response.json({ error: "Conversation not found." }, { status: 404 });

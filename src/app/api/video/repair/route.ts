@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { rm, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { getCurrentUser, mutationOriginAllowed } from "@/server/auth/access";
 import { createAsset, deleteAsset, getOwnedAsset } from "@/server/content/assets";
-import { createGenerationJob } from "@/server/content/jobs";
+import { createGenerationJob, GenerationIdempotencyConflictError, getGenerationJob } from "@/server/content/jobs";
 import { publicJob } from "@/server/content/public-job";
 import type { JsonValue } from "@/server/content/types";
 import { videoToolPaths } from "@/server/media/binaries";
@@ -12,6 +13,7 @@ import { prepareMediaRequest } from "@/server/media/service";
 import { prepareTemporalRepair, TemporalRepairError } from "@/server/media/temporal-repair";
 import { signedAssetUrl } from "@/server/storage/asset-access";
 import { mediaPath, mediaRoot } from "@/server/storage/private-files";
+import { parseBoundedJson } from "@/server/storage/bounded-json";
 
 export const runtime = "nodejs";
 
@@ -21,6 +23,42 @@ const requestSchema = z.object({
   endSec: z.number().finite().positive(),
   prompt: z.string().trim().min(1).max(4000)
 }).strict();
+
+type RepairInput = z.infer<typeof requestSchema>;
+type RepairJob = NonNullable<ReturnType<typeof getGenerationJob>>;
+type RepairInterval = { startSec: number; endSec: number; contextStartSec: number; contextEndSec: number };
+const REPAIR_MODEL = "fal-ai/ltx-2.3-quality/inpaint";
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+}
+
+/** Compare the original user request, not randomized FFmpeg paths or expiring URLs. */
+export function matchingRepairInterval(job: RepairJob, input: RepairInput): RepairInterval | null {
+  if (job.kind !== "edit" || job.provider !== "fal" || job.providerModel !== REPAIR_MODEL) return null;
+  const repair = record(record(job.input)?.repair);
+  if (!repair || repair.sourceAssetId !== input.sourceAssetId) return null;
+  const original = requestSchema.safeParse(repair.originalRequest);
+  if (!original.success || !isDeepStrictEqual(original.data, input)) return null;
+  const plan = record(repair.plan);
+  if (!plan) return null;
+  const { targetStartSec, targetEndSec, contextStartSec, contextEndSec } = plan;
+  if (![targetStartSec, targetEndSec, contextStartSec, contextEndSec]
+    .every(value => typeof value === "number" && Number.isFinite(value)) ||
+    (targetEndSec as number) <= (targetStartSec as number) ||
+    (contextEndSec as number) <= (contextStartSec as number)) return null;
+  return { startSec: targetStartSec as number, endSec: targetEndSec as number,
+    contextStartSec: contextStartSec as number, contextEndSec: contextEndSec as number };
+}
+
+function replayRepair(ownerId: string, key: string, input: RepairInput): Response | null {
+  const existing = getGenerationJob(ownerId, key);
+  if (!existing) return null;
+  const interval = matchingRepairInterval(existing, input);
+  if (!interval) return Response.json({ error: "This request key was already used for a different repair." }, { status: 409 });
+  return Response.json({ job: publicJob(existing), interval }, { status: 202 });
+}
 
 async function probeSignedAsset(url: string): Promise<boolean> {
   try {
@@ -37,10 +75,17 @@ export async function POST(request: Request) {
   const current = await getCurrentUser(request.headers);
   if (!current) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
-  let input: z.infer<typeof requestSchema>;
-  try { input = requestSchema.parse(await request.json()); }
-  catch { return Response.json({ error: "Invalid repair request." }, { status: 400 }); }
+  const rawKey = request.headers.get("Idempotency-Key");
+  if (!rawKey || !z.uuid().safeParse(rawKey).success) {
+    return Response.json({ error: "A UUID Idempotency-Key is required." }, { status: 400 });
+  }
+  const key = rawKey.toLowerCase();
+  const parsed = await parseBoundedJson(request, requestSchema, 16_000, "Invalid repair request.");
+  if (!parsed.success) return parsed.response;
+  const input = parsed.data;
   if (input.endSec <= input.startSec) return Response.json({ error: "Choose a valid repair interval." }, { status: 400 });
+  const replay = replayRepair(current.id, key, input);
+  if (replay) return replay;
   const source = getOwnedAsset(current.id, input.sourceAssetId);
   if (!source || source.kind !== "video" || !["video/mp4", "video/webm"].includes(source.mimeType)) {
     return Response.json({ error: "Source video not found." }, { status: 404 });
@@ -79,7 +124,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "The public site cannot serve the repair references yet." }, { status: 409 });
     }
     const providerRequest = {
-      modelId: "fal-ai/ltx-2.3-quality/inpaint",
+      modelId: REPAIR_MODEL,
       operation: "temporal_inpaint",
       prompt: plan.prompt,
       videoUrl: contextAccess.url,
@@ -90,9 +135,11 @@ export async function POST(request: Request) {
     prepareMediaRequest(providerRequest);
     const job = createGenerationJob(current.id, {
       kind: "edit", provider: "fal", providerModel: providerRequest.modelId,
+      idempotencyKey: key,
       payload: {
         request: providerRequest,
-        repair: { plan, sourceAssetId: source.id, contextAssetIds: [context.id, mask.id] }
+        repair: { originalRequest: input, plan, sourceAssetId: source.id,
+          contextAssetIds: [context.id, mask.id] }
       } as JsonValue
     });
     queued = true;
@@ -101,6 +148,11 @@ export async function POST(request: Request) {
       contextStartSec: plan.contextStartSec, contextEndSec: plan.contextEndSec
     } }, { status: 202 });
   } catch (error) {
+    if (error instanceof GenerationIdempotencyConflictError) {
+      // Another request with this key may have finished preprocessing first.
+      return replayRepair(current.id, key, input) ??
+        Response.json({ error: "Could not resolve the request key." }, { status: 409 });
+    }
     if (error instanceof TemporalRepairError) {
       return Response.json({ error: error.message, code: error.code }, { status: 422 });
     }

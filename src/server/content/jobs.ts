@@ -34,7 +34,7 @@ function hydrate(row: typeof generationJob.$inferSelect) {
   return { ...row, input: decodeJson(row.inputJson), output: row.outputJson ? decodeJson(row.outputJson) : null };
 }
 
-const referenceKeys = new Set(["imageUrl", "videoUrl", "maskVideoUrl", "imageUrls", "videoUrls", "audioUrls"]);
+const referenceKeys = new Set(["imageUrl", "videoUrl", "maskVideoUrl", "firstFrameUrl", "lastFrameUrl", "imageUrls", "videoUrls", "audioUrls"]);
 
 function comparableReferenceUrl(value: string): string {
   try {

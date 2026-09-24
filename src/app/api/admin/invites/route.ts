@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getCurrentAdmin, mutationOriginAllowed } from "@/server/auth/access";
 import { createInvite, inviteUrl, listInvites } from "@/server/auth/invites";
+import { CONTENT_JSON_LIMIT, parseBoundedJson } from "@/server/storage/bounded-json";
 
 export const runtime = "nodejs";
 
@@ -25,9 +26,9 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid request origin" }, { status: 403 });
   }
 
-  const parsed = createInviteInput.safeParse(await request.json().catch(() => null));
+  const parsed = await parseBoundedJson(request, createInviteInput, CONTENT_JSON_LIMIT, "Invalid invite input");
   if (!parsed.success) {
-    return Response.json({ error: "Invalid invite input" }, { status: 400 });
+    return parsed.response;
   }
 
   try {

@@ -34,8 +34,13 @@ const supportedModels: Record<Exclude<ExploreStep["kind"], "chat">, readonly str
   image: ["fal-ai/flux-2-pro", "nano-banana-2", "wavespeed-ai/z-image/turbo", "fal-ai/qwen-image-edit"],
   video: ["fal-ai/veo3.1/fast", "fal-ai/veo3.1/fast/image-to-video",
     "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/reference-to-video"],
-  audio: ["fal-ai/elevenlabs/tts/eleven-v3"]
+  audio: ["fal-ai/elevenlabs/tts/eleven-v3", "elevenlabs/music/v2",
+    "fal-ai/stable-audio-3/small/music/text-to-audio"]
 };
+
+export function supportsWorkflowModel(kind: ExploreStep["kind"], modelId: string): boolean {
+  return kind === "chat" ? true : supportedModels[kind].includes(modelId);
+}
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -213,6 +218,9 @@ function requestForMedia(step: ExploreStep, modelId: string, prompt: string,
       throw new Error("This video model is unavailable for workflow execution.");
     }
     return { modelId, operation: "text_to_video", prompt };
+  }
+  if (modelId === "elevenlabs/music/v2" || modelId === "fal-ai/stable-audio-3/small/music/text-to-audio") {
+    return { modelId, operation: "text_to_music", prompt };
   }
   if (modelId !== "fal-ai/elevenlabs/tts/eleven-v3") {
     throw new Error("This audio model is unavailable for workflow execution.");

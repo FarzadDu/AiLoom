@@ -161,6 +161,17 @@ const veoImageSchema = z.strictObject({
   resolution: veoResolution.optional(),
   audio: z.boolean().optional()
 });
+const veoFirstLastSchema = z.strictObject({
+  modelId: z.literal("fal-ai/veo3.1/fast/first-last-frame-to-video"),
+  operation: z.literal("first_last_frame_to_video"),
+  prompt,
+  firstFrameUrl: safeUrl,
+  lastFrameUrl: safeUrl,
+  durationSec: veoDuration.optional(),
+  aspectRatio: z.enum(["auto", "16:9", "9:16"]).optional(),
+  resolution: veoResolution.optional(),
+  audio: z.boolean().optional()
+});
 const seedanceTextSchema = z.strictObject({
   modelId: z.literal("bytedance/seedance-2.5/text-to-video"),
   operation: z.literal("text_to_video"),
@@ -201,6 +212,19 @@ const speechSchema = z.strictObject({
   text: speechText,
   voice: z.string().trim().min(1).max(128).optional(),
   languageCode: z.enum(["en", "fa"]).optional()
+});
+const elevenMusicSchema = z.strictObject({
+  modelId: z.literal("elevenlabs/music/v2"),
+  operation: z.literal("text_to_music"),
+  prompt,
+  durationSec: z.number().int().min(3).max(600).optional(),
+  forceInstrumental: z.boolean().optional()
+});
+const stableMusicSchema = z.strictObject({
+  modelId: z.literal("fal-ai/stable-audio-3/small/music/text-to-audio"),
+  operation: z.literal("text_to_music"),
+  prompt,
+  durationSec: z.number().int().min(3).max(120).optional()
 });
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -370,6 +394,18 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
         "fal Veo 3.1 Fast image-to-video, 720p/1080p, generated video seconds");
       break;
     }
+    case "fal-ai/veo3.1/fast/first-last-frame-to-video": {
+      const value = checked(veoFirstLastSchema, input);
+      providerInput = {
+        ...veoInput(value),
+        aspect_ratio: value.aspectRatio ?? "auto",
+        first_frame_url: value.firstFrameUrl,
+        last_frame_url: value.lastFrameUrl
+      };
+      estimate = priceEstimate((value.durationSec ?? 8) * (value.audio === false ? 0.10 : 0.15),
+        "fal Veo 3.1 Fast first/last frame, 720p/1080p, generated video seconds");
+      break;
+    }
     case "bytedance/seedance-2.5/text-to-video": {
       const value = checked(seedanceTextSchema, input);
       providerInput = seedanceInput(value);
@@ -411,6 +447,30 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
       };
       estimate = priceEstimate(value.text.length * 0.10 / 1000,
         "fal Eleven v3, requested text characters");
+      break;
+    }
+    case "elevenlabs/music/v2": {
+      const value = checked(elevenMusicSchema, input);
+      const durationSec = value.durationSec ?? 30;
+      providerInput = {
+        prompt: value.prompt,
+        music_length_ms: durationSec * 1000,
+        force_instrumental: value.forceInstrumental ?? false,
+        output_format: "mp3_48000_192"
+      };
+      estimate = priceEstimate(Math.ceil(durationSec / 60) * 0.60,
+        "fal ElevenLabs Music v2, started output minutes");
+      break;
+    }
+    case "fal-ai/stable-audio-3/small/music/text-to-audio": {
+      const value = checked(stableMusicSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        duration: value.durationSec ?? 30,
+        output_format: "mp3",
+        bitrate: "192k"
+      };
+      // The playground shows a sample request price, not a duration formula.
       break;
     }
     default:

@@ -6,6 +6,7 @@ import { signedAssetUrl, verifyAssetAccess } from "@/server/storage/asset-access
 import { getDb } from "@/server/db";
 import { asset as assetTable } from "@/server/db/schema";
 import { eq } from "drizzle-orm";
+import { CONTENT_JSON_LIMIT, parseBoundedJson } from "@/server/storage/bounded-json";
 
 export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
@@ -53,9 +54,11 @@ export async function PATCH(request: Request, context: Context) {
   if (!current) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
   const { id } = await context.params;
-  let visibility: "private" | "public";
-  try { visibility = z.object({ visibility: z.enum(["private", "public"]) }).strict().parse(await request.json()).visibility; }
-  catch { return Response.json({ error: "Invalid visibility." }, { status: 400 }); }
+  const input = await parseBoundedJson(request,
+    z.object({ visibility: z.enum(["private", "public"]) }).strict(),
+    CONTENT_JSON_LIMIT, "Invalid visibility.");
+  if (!input.success) return input.response;
+  const visibility = input.data.visibility;
   const asset = setAssetVisibility(current.id, id, visibility);
   if (!asset) return Response.json({ error: "File not found." }, { status: 404 });
   return Response.json({ id: asset.id, visibility: asset.visibility });
