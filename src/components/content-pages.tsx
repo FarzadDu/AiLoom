@@ -303,7 +303,6 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
       <div className="browse-layout">
         <div className="workflow-list" aria-label={t.exploreEyebrow}>
           {!loaded && <p className="content-empty" role="status">{t.loadingWorkflows}</p>}
-          {loaded && !templates.length && <p className="content-empty">{t.exploreEmpty}</p>}
           {templates.map(item => {
             const Icon = stepIcons[item.definition.steps[0].kind];
             return <button type="button" key={item.id} className="workflow-row" aria-pressed={selected?.id === item.id && !draft} onClick={() => { setSelectedId(item.id); setSelectedStepId(null); setDraft(null); setSaveError(""); setInputValues({}); setInputFiles({}); setInputError(""); }}><span className="workflow-icon"><Icon size={22} aria-hidden="true" /></span><span><strong>{item.title}</strong><small>{item.description || item.category} · {item.definition.steps.length} {t.stepCount} · {item.visibility === "public" ? t.workflowPublic : t.workflowPrivate}</small></span><ArrowRight size={17} aria-hidden="true" /></button>;
@@ -349,7 +348,7 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
             <button className="outline-action workflow-open-step" type="button" onClick={launchStep}>{rt.openStep}<ArrowRight size={16} aria-hidden="true" /></button>
             {isOwner && <div className="owner-actions"><span>{t.workflowOwn} · {selected.visibility === "public" ? t.workflowPublic : t.workflowPrivate}</span><div><button type="button" disabled={saving} onClick={() => { setDraft(draftFromTemplate(selected)); setSaveError(""); }}>{t.workflowEdit}</button><button type="button" disabled={saving} onClick={() => void setVisibility(selected.visibility === "public" ? "private" : "public")}>{selected.visibility === "public" ? t.workflowUnpublish : t.workflowPublish}</button></div></div>}
             {saveError && <p className="content-error" role="alert">{saveError}</p>}
-          </> : <div className="content-empty detail-empty"><Compass size={28} aria-hidden="true" /><p>{t.exploreEmpty}</p></div>}
+          </> : loaded ? <div className="content-empty detail-empty"><Compass size={28} aria-hidden="true" /><p>{t.exploreEmpty}</p></div> : null}
         </div>
       </div>
     </section>

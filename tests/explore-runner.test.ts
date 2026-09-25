@@ -197,6 +197,81 @@ test("Explore passes private image and PDF inputs to its first chat step", async
   });
   assert.equal(latest.status, "succeeded");
   assert.deepEqual(body?.attachmentIds, [videoId, imageId]);
+  assert.match(String(body?.requestId), /^[0-9a-f-]{36}$/i);
+});
+
+test("Explore recovers an interrupted chat step through the saved request status", async () => {
+  const recipe = template([{ id: "brief", title: "Brief", kind: "chat", prompt: "Describe {{subject}}" }]);
+  const run = createWorkflowRun(recipe, "owner-1", { subject: "a kite" }, {});
+  const createdConversation = "55555555-5555-4555-8555-555555555555";
+  let latest = run;
+  let postedId = "";
+  await executeWorkflow(run, {
+    signal: new AbortController().signal,
+    fetcher: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/chat") {
+        const body = JSON.parse(String(init?.body)) as { requestId: string; conversationId?: string };
+        postedId = body.requestId;
+        assert.equal(body.conversationId, undefined);
+        return new Response(`event: start\ndata: {"conversationId":"${createdConversation}","messageId":"m"}\n\n` +
+          'event: delta\ndata: {"text":"Partial"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (url === `/api/chat?requestId=${postedId}`) return Response.json({ error: "Not found" }, { status: 404 });
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof fetch,
+    onUpdate: value => { latest = value; }
+  });
+  assert.equal(latest.status, "failed");
+  assert.equal(latest.conversationId, createdConversation);
+  assert.equal(latest.steps[0].requestId, postedId);
+  assert.equal(latest.steps[0].chatRequest?.conversationId, undefined);
+
+  const restored = restoreWorkflowRun(JSON.stringify(latest), "owner-1");
+  assert.ok(restored);
+  const resumed = resumeWorkflowRun(restored);
+  const calls: string[] = [];
+  await executeWorkflow(resumed, {
+    signal: new AbortController().signal,
+    fetcher: (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return Response.json({ status: "completed", requestId: postedId,
+        conversationId: createdConversation, answer: "A bright red kite.", sources: [] });
+    }) as typeof fetch,
+    onUpdate: value => { latest = value; }
+  });
+  assert.deepEqual(calls, [`/api/chat?requestId=${postedId}`]);
+  assert.equal(latest.status, "succeeded");
+  assert.equal(latest.steps[0].text, "A bright red kite.");
+});
+
+test("Explore retries an unrecorded chat request with its original input and UUID", async () => {
+  const recipe = template([{ id: "brief", title: "Brief", kind: "chat", prompt: "Describe {{subject}}" }]);
+  const run = createWorkflowRun(recipe, "owner-1", { subject: "a kite" }, {});
+  const requestId = "8a3c765a-945b-4f52-b8e3-98962051f975";
+  run.conversationId = "55555555-5555-4555-8555-555555555555";
+  run.steps[0] = { id: "brief", state: "failed", requestId,
+    chatRequest: { text: "Describe a kite", model: "openrouter/auto" } };
+  const resumed = resumeWorkflowRun(run);
+  let latest = resumed;
+  const calls: string[] = [];
+  await executeWorkflow(resumed, {
+    signal: new AbortController().signal,
+    fetcher: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.startsWith("/api/chat?")) return Response.json({ error: "Not found" }, { status: 404 });
+      const body = JSON.parse(String(init?.body)) as { requestId: string; conversationId?: string; text: string };
+      assert.equal(body.requestId, requestId);
+      assert.equal(body.conversationId, undefined);
+      assert.equal(body.text, "Describe a kite");
+      return new Response('event: delta\ndata: {"text":"Recovered."}\n\nevent: done\ndata: {"messageId":"m"}\n\n');
+    }) as typeof fetch,
+    onUpdate: value => { latest = value; }
+  });
+  assert.deepEqual(calls, [`/api/chat?requestId=${requestId}`, "/api/chat"]);
+  assert.equal(latest.status, "succeeded");
 });
 
 test("a lost POST response replays the saved request key; terminal failure rotates it", async () => {

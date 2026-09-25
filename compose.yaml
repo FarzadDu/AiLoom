@@ -21,6 +21,7 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      WAVESPEED_API_KEY: ${WAVESPEED_API_KEY:-}
     volumes:
       - ailoom_data:/app/data
     healthcheck:
@@ -50,10 +51,71 @@ services:
       DATABASE_PATH: /app/data/ailoom.sqlite
       MEDIA_DIR: /app/data/media
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL in Coolify}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in Coolify}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       KIE_API_KEY: ${KIE_API_KEY:-}
       FAL_KEY: ${FAL_KEY:-}
       WAVESPEED_API_KEY: ${WAVESPEED_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+    volumes:
+      - ailoom_data:/app/data
+
+  renderer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["npm", "run", "renderer"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_PATH: /app/data/ailoom.sqlite
+      MEDIA_DIR: /app/data/media
+    volumes:
+      - ailoom_data:/app/data
+
+  lora_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["npm", "run", "worker:lora"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_PATH: /app/data/ailoom.sqlite
+      MEDIA_DIR: /app/data/media
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL in Coolify}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in Coolify}
+      WAVESPEED_API_KEY: ${WAVESPEED_API_KEY:-}
+    volumes:
+      - ailoom_data:/app/data
+
+  dubbing_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["npm", "run", "worker:dubbing"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_PATH: /app/data/ailoom.sqlite
+      MEDIA_DIR: /app/data/media
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL in Coolify}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET in Coolify}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
     volumes:
       - ailoom_data:/app/data

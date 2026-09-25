@@ -11,6 +11,12 @@
     "test": "tsx --test tests/*.test.ts",
     "worker": "node --import tsx scripts/worker.ts",
     "worker:local": "node --env-file=.env --import tsx scripts/worker.ts",
+    "renderer": "node --import tsx scripts/render-worker.ts",
+    "renderer:local": "node --env-file=.env --import tsx scripts/render-worker.ts",
+    "worker:lora": "node --import tsx scripts/lora-worker.ts",
+    "worker:lora:local": "node --env-file=.env --import tsx scripts/lora-worker.ts",
+    "worker:dubbing": "node --import tsx scripts/dubbing-worker.ts",
+    "worker:dubbing:local": "node --env-file=.env --import tsx scripts/dubbing-worker.ts",
     "migrate": "node --import tsx scripts/migrate.ts",
     "seed:specialists": "node --import tsx scripts/seed-specialists.ts"
   },

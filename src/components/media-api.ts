@@ -26,6 +26,17 @@ export type MediaJob = {
   costEstimateMicrosUsd?: number | null;
 };
 
+export function mediaViewForJob(kind: unknown, providerModel: unknown): "image" | "video" | "audio" | null {
+  if (kind === "image" || kind === "video" || kind === "audio") return kind;
+  if (kind === "upscale") return "image";
+  if (kind === "edit") {
+    if (providerModel === "fal-ai/qwen-image-edit" ||
+      providerModel === "wavespeed-ai/z-image/turbo-inpaint") return "image";
+    if (providerModel === "fal-ai/ltx-2.3-quality/inpaint") return "video";
+  }
+  return null;
+}
+
 const record = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 

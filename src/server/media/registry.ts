@@ -6,6 +6,8 @@ export type MediaProvider = "kie" | "fal" | "wavespeed";
 export type MediaOperation =
   | "text_to_image"
   | "image_edit"
+  | "image_inpaint"
+  | "character_to_image"
   | "image_upscale"
   | "text_to_video"
   | "image_to_video"
@@ -13,7 +15,8 @@ export type MediaOperation =
   | "reference_to_video"
   | "temporal_inpaint"
   | "text_to_speech"
-  | "text_to_music";
+  | "text_to_music"
+  | "text_to_sound_effect";
 
 export type MediaModel = {
   id: string;
@@ -61,6 +64,24 @@ export const MEDIA_MODELS: readonly MediaModel[] = [
     outputKind: "image",
     docsUrl: "https://fal.ai/models/fal-ai/qwen-image-edit/api",
     priceNote: "Published rate is $0.03 per output megapixel; final charge may vary by account."
+  },
+  {
+    id: "wavespeed-ai/z-image/turbo-inpaint",
+    provider: "wavespeed",
+    name: "Z Image Turbo Inpaint",
+    operations: ["image_inpaint"],
+    outputKind: "image",
+    docsUrl: "https://wavespeed.ai/docs/docs-api/wavespeed-ai/z-image-turbo-inpaint",
+    priceNote: "Published rate is $0.02 per inpainted image; confirm the final account charge."
+  },
+  {
+    id: "fal-ai/ideogram/character",
+    provider: "fal",
+    name: "Ideogram Character",
+    operations: ["character_to_image"],
+    outputKind: "image",
+    docsUrl: "https://fal.ai/models/fal-ai/ideogram/character/api",
+    priceNote: "Published price per image: $0.15 BALANCED or $0.20 QUALITY. Character similarity is not guaranteed."
   },
   {
     id: "topaz/upscale/image/precision",
@@ -151,6 +172,15 @@ export const MEDIA_MODELS: readonly MediaModel[] = [
     outputKind: "audio",
     docsUrl: "https://fal.ai/models/fal-ai/stable-audio-3/small/music/text-to-audio/api",
     priceNote: "Fal displays a sample per-audio price; final charge depends on request settings and account."
+  },
+  {
+    id: "fal-ai/stable-audio-3/small/sfx/text-to-audio",
+    provider: "fal",
+    name: "Stable Audio 3 Small SFX",
+    operations: ["text_to_sound_effect"],
+    outputKind: "audio",
+    docsUrl: "https://fal.ai/models/fal-ai/stable-audio-3/small/sfx/text-to-audio/api",
+    priceNote: "Fal shows a sample price per output, but the actual charge depends on request settings and account."
   }
 ];
 

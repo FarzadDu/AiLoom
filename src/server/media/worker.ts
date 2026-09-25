@@ -8,6 +8,8 @@ import { claimNextQueuedJob, claimRunningGenerationJob, expireStaleSubmittingJob
 import { deletePrivateFile, mediaPath, mediaRoot } from "../storage/private-files";
 import { importProviderMedia } from "../storage/provider-import";
 import { getMediaTask, submitMediaRequest } from "./service";
+import { PrivateReferenceError, refreshPrivateAssetUrls } from "./private-references";
+import { renderStoryboardMontage, storyboardRenderJobSchema } from "./storyboard-render";
 import { spliceTemporalRepair, type TemporalRepairPlan } from "./temporal-repair";
 import { videoToolPaths } from "./binaries";
 
@@ -61,6 +63,7 @@ async function cleanupRepairReferences(job: ActiveJob): Promise<void> {
 }
 
 function errorCode(error: unknown): string {
+  if (error instanceof PrivateReferenceError) return "private_reference_unavailable";
   if (error && typeof error === "object" && "kind" in error && error.kind === "uncertain_submission") {
     return "submission_uncertain";
   }
@@ -74,8 +77,9 @@ async function submit(job: ActiveJob, leaseOwner: string, dependencies: WorkerDe
   const heartbeat = leaseHeartbeat(job, leaseOwner, "submitting");
   const signal = AbortSignal.any([heartbeat.signal, AbortSignal.timeout(90_000)]);
   try {
+    const request = refreshPrivateAssetUrls(job.ownerId, repairInput(job)?.request ?? job.input);
     const accepted = await (dependencies.submitMediaRequest ?? submitMediaRequest)(
-      repairInput(job)?.request ?? job.input, { signal });
+      request, { signal });
     transitionGenerationJob(job.ownerId, job.id, {
       state: "running", externalId: accepted.providerTaskId, leaseOwner
     });
@@ -86,6 +90,54 @@ async function submit(job: ActiveJob, leaseOwner: string, dependencies: WorkerDe
     if (failed) await cleanupRepairReferences(job);
   } finally {
     heartbeat.stop();
+  }
+}
+
+async function submitStoryboard(job: ActiveJob, leaseOwner: string): Promise<void> {
+  const heartbeat = leaseHeartbeat(job, leaseOwner, "submitting");
+  const signal = AbortSignal.any([heartbeat.signal, AbortSignal.timeout(20 * 60_000)]);
+  const outputKey = `storyboards/output/${job.id}.mp4`;
+  const outputPath = mediaPath(outputKey);
+  let outputAssetId: string | null = null;
+  let completed = false;
+  try {
+    const input = storyboardRenderJobSchema.parse(job.input);
+    const sources = input.shots.map(shot => {
+      const asset = getOwnedAsset(job.ownerId, shot.assetId);
+      if (!asset || asset.kind !== "video" ||
+          !["video/mp4", "video/webm"].includes(asset.mimeType)) {
+        throw new Error("A storyboard shot output is unavailable.");
+      }
+      return { sourcePath: mediaPath(asset.storageKey), durationSec: shot.durationSec };
+    });
+    const rendered = await renderStoryboardMontage({
+      shots: sources, aspectRatio: input.aspectRatio, outputPath,
+      workDir: mediaPath(`storyboards/tmp/${job.id}`), signal
+    });
+    const asset = createAsset(job.ownerId, {
+      kind: "video", source: "generation", mimeType: "video/mp4",
+      sizeBytes: rendered.sizeBytes, storageKey: outputKey, projectId: job.projectId
+    });
+    outputAssetId = asset.id;
+    const finished = transitionGenerationJob(job.ownerId, job.id, {
+      state: "succeeded", leaseOwner,
+      output: { assets: [{ id: asset.id, kind: "video", mimeType: "video/mp4",
+        url: `/api/assets/${asset.id}` }], storyboardId: input.boardId,
+        shotCount: input.shots.length, durationSec: rendered.durationSec }
+    });
+    if (!finished) throw new Error("Storyboard render lease was lost.");
+    completed = true;
+  } catch {
+    transitionGenerationJob(job.ownerId, job.id, {
+      state: "failed", errorCode: signal.aborted ? "storyboard_render_interrupted" : "storyboard_render_failed",
+      leaseOwner
+    });
+  } finally {
+    heartbeat.stop();
+    if (!completed) {
+      if (outputAssetId) deleteAsset(job.ownerId, outputAssetId);
+      await rm(outputPath, { force: true }).catch(() => undefined);
+    }
   }
 }
 
@@ -220,10 +272,11 @@ async function pollWithLease(job: ActiveJob, leaseOwner: string,
 
 export async function runMediaWorkerCycle(dependencies: WorkerDependencies = {}): Promise<void> {
   const leaseOwner = randomUUID();
-  const claimed = claimNextQueuedJob(leaseOwner);
+  const claimed = claimNextQueuedJob(leaseOwner, "remote");
   if (claimed) await submit(claimed, leaseOwner, dependencies);
   const active = listActiveGenerationJobs({ limit: 50 });
   for (const job of active) {
+    if (job.provider === "local") continue;
     if (job.state === "submitting") {
       // A healthy submitter renews its lease. A dead submitter's paid POST may
       // have been accepted, so never re-submit it automatically.
@@ -232,5 +285,28 @@ export async function runMediaWorkerCycle(dependencies: WorkerDependencies = {})
     }
     const running = claimRunningGenerationJob(job.ownerId, job.id, leaseOwner);
     if (running) await poll(running, leaseOwner, dependencies);
+  }
+}
+
+/** Run CPU-heavy local assembly in a dedicated process so paid jobs keep polling. */
+export async function runStoryboardWorkerCycle(): Promise<void> {
+  const leaseOwner = randomUUID();
+  const claimed = claimNextQueuedJob(leaseOwner, "local");
+  if (claimed) {
+    if (claimed.providerModel === "storyboard-compose-v1") {
+      await submitStoryboard(claimed, leaseOwner);
+    } else {
+      transitionGenerationJob(claimed.ownerId, claimed.id, {
+        state: "failed", errorCode: "unsupported_local_job", leaseOwner
+      });
+    }
+  }
+  for (const job of listActiveGenerationJobs({ limit: 50 })) {
+    if (job.provider === "local" && job.state === "submitting") {
+      if (expireStaleSubmittingJob(job.ownerId, job.id, "local_render_interrupted")) {
+        await rm(mediaPath(`storyboards/tmp/${job.id}`), { recursive: true, force: true }).catch(() => undefined);
+        await rm(mediaPath(`storyboards/output/${job.id}.mp4`), { force: true }).catch(() => undefined);
+      }
+    }
   }
 }

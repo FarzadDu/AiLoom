@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db";
 import { asset, conversation, message } from "../db/schema";
@@ -39,6 +39,19 @@ export function getConversation(userId: string, conversationId: string) {
     .where(and(eq(conversation.id, conversationId), eq(conversation.ownerId, userId))).get() ?? null;
 }
 
+/** Server-created system notes for specialist continuity; user messages never enter this query. */
+export function getConversationSystemTexts(userId: string, conversationId: string): string[] {
+  if (!getConversation(userId, conversationId)) return [];
+  return getDb().select({ blocksJson: message.blocksJson }).from(message)
+    .where(and(eq(message.conversationId, conversationId), eq(message.role, "system")))
+    .orderBy(asc(message.position)).limit(4).all().flatMap(row => {
+      try {
+        const blocks = contentBlocksSchema.safeParse(JSON.parse(row.blocksJson));
+        return blocks.success ? blocks.data.filter(block => block.type === "text").map(block => block.text) : [];
+      } catch { return []; }
+    });
+}
+
 export function listConversations(userId: string, options: { limit?: number; cursor?: string } = {}) {
   const limit = z.number().int().min(1).max(100).parse(options.limit ?? 50);
   const cursor = options.cursor ? getConversation(userId, options.cursor) : null;
@@ -55,13 +68,15 @@ export function listConversations(userId: string, options: { limit?: number; cur
 export function updateConversation(
   userId: string,
   conversationId: string,
-  input: { title?: string; modelId?: string | null }
+  input: { title?: string; modelId?: string | null; projectId?: string | null }
 ) {
   const parsed = z.object({
     title: z.string().trim().min(1).max(160).optional(),
-    modelId: z.string().trim().min(1).max(200).nullable().optional()
+    modelId: z.string().trim().min(1).max(200).nullable().optional(),
+    projectId: z.uuid().nullable().optional()
   }).strict().parse(input);
   if (!getConversation(userId, conversationId)) return null;
+  requireOwnedProject(userId, parsed.projectId);
   getDb().update(conversation).set({ ...parsed, updatedAt: new Date() })
     .where(and(eq(conversation.id, conversationId), eq(conversation.ownerId, userId))).run();
   return getConversation(userId, conversationId);

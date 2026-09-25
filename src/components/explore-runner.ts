@@ -8,6 +8,7 @@ export type WorkflowStepState = {
   state: "waiting" | "running" | "succeeded" | "failed";
   modelId?: string;
   requestId?: string;
+  chatRequest?: { text: string; model: string; conversationId?: string; attachmentIds?: string[] };
   jobId?: string;
   text?: string;
   asset?: WorkflowAsset;
@@ -104,6 +105,11 @@ export function restoreWorkflowRun(raw: string | null, ownerId: string): Workflo
       run.steps.some((step, index) => step.id !== run.template.definition.steps[index].id ||
         !["waiting", "running", "succeeded", "failed"].includes(step.state) ||
         step.requestId !== undefined && !uuid.test(step.requestId) ||
+        step.chatRequest !== undefined && (typeof step.chatRequest.text !== "string" ||
+          typeof step.chatRequest.model !== "string" ||
+          step.chatRequest.conversationId !== undefined && typeof step.chatRequest.conversationId !== "string" ||
+          step.chatRequest.attachmentIds !== undefined && (!Array.isArray(step.chatRequest.attachmentIds) ||
+            !step.chatRequest.attachmentIds.every(id => typeof id === "string"))) ||
         step.jobId !== undefined && !uuid.test(step.jobId))) return null;
     return run;
   } catch { return null; }
@@ -262,6 +268,31 @@ async function pollJob(fetcher: typeof fetch, jobId: string, signal: AbortSignal
   }
 }
 
+async function inspectChatRequest(fetcher: typeof fetch, requestId: string, signal: AbortSignal):
+  Promise<{ conversationId: string; answer: string } | null> {
+  for (let poll = 0; poll <= 6; poll++) {
+    const response = await fetcher(`/api/chat?requestId=${encodeURIComponent(requestId)}`, {
+      method: "GET", credentials: "same-origin", cache: "no-store", signal
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(await responseError(response));
+    const state = asRecord(await response.json());
+    if (state?.status === "completed" && typeof state.conversationId === "string" &&
+      typeof state.answer === "string") return { conversationId: state.conversationId, answer: state.answer };
+    if (state?.status === "uncertain" || state?.status === "failed") {
+      throw new Error("The previous chat step is uncertain or failed. It will not make another paid call automatically.");
+    }
+    if (state?.status !== "processing") throw new Error("The chat step status was invalid.");
+    if (poll === 6) break;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { signal.removeEventListener("abort", aborted); resolve(); }, 1500);
+      const aborted = () => { clearTimeout(timer); reject(new DOMException("Workflow paused.", "AbortError")); };
+      signal.addEventListener("abort", aborted, { once: true });
+    });
+  }
+  throw new Error("The previous chat step is still processing. Resume later to check the same request.");
+}
+
 export async function executeWorkflow(initial: WorkflowRun, options: {
   fetcher?: typeof fetch;
   signal: AbortSignal;
@@ -288,28 +319,54 @@ export async function executeWorkflow(initial: WorkflowRun, options: {
     patchStep(index, { state: "running", error: undefined, modelId });
     try {
       if (step.kind === "chat") {
-        const prompt = resolveWorkflowPrompt(run, index);
-        const inputAttachments = !run.conversationId
-          ? Object.values(run.inputAssets).filter(asset => asset.kind === "image" || asset.kind === "file") : [];
-        const latestGeneratedImage = [...run.steps.slice(0, index)].reverse()
-          .map(state => state.asset).find(asset => asset?.kind === "image");
-        const attachmentIds = [...new Set([
-          ...inputAttachments.map(asset => asset.id),
-          ...(latestGeneratedImage ? [latestGeneratedImage.id] : [])
-        ])];
-        if (attachmentIds.length > 8) throw new Error("Chat steps can attach at most eight images or PDFs.");
-        const response = await fetcher("/api/chat", {
-          method: "POST", credentials: "same-origin", signal: options.signal,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: prompt, model: modelId,
+        const requestId = previousState.requestId || crypto.randomUUID();
+        let chatRequest = previousState.chatRequest;
+        if (!chatRequest) {
+          const prompt = resolveWorkflowPrompt(run, index);
+          const inputAttachments = !run.conversationId
+            ? Object.values(run.inputAssets).filter(asset => asset.kind === "image" || asset.kind === "file") : [];
+          const latestGeneratedImage = [...run.steps.slice(0, index)].reverse()
+            .map(state => state.asset).find(asset => asset?.kind === "image");
+          const attachmentIds = [...new Set([
+            ...inputAttachments.map(asset => asset.id),
+            ...(latestGeneratedImage ? [latestGeneratedImage.id] : [])
+          ])];
+          if (attachmentIds.length > 8) throw new Error("Chat steps can attach at most eight images or PDFs.");
+          chatRequest = { text: prompt, model: modelId,
             ...(run.conversationId ? { conversationId: run.conversationId } : {}),
-            ...(attachmentIds.length ? { attachmentIds } : {}) })
-        });
-        let text = "";
-        await readChatStream(response, event => {
-          if (event.type === "start" && event.conversationId) update({ conversationId: event.conversationId });
-          if (event.type === "delta") text += event.text;
-        });
+            ...(attachmentIds.length ? { attachmentIds } : {}) };
+        }
+        // Persist the UUID and exact original input before any provider call.
+        if (!previousState.requestId || !previousState.chatRequest) patchStep(index, { requestId, chatRequest });
+        let recovered = previousState.requestId
+          ? await inspectChatRequest(fetcher, requestId, options.signal) : null;
+        let text = recovered?.answer ?? "";
+        if (recovered) update({ conversationId: recovered.conversationId });
+        if (!recovered) {
+          const response = await fetcher("/api/chat", {
+            method: "POST", credentials: "same-origin", signal: options.signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...chatRequest, requestId })
+          });
+          if (response.headers.get("Content-Type")?.includes("application/json")) {
+            recovered = await inspectChatRequest(fetcher, requestId, options.signal);
+            if (!recovered) throw new Error(await responseError(response));
+            text = recovered.answer;
+            update({ conversationId: recovered.conversationId });
+          } else {
+            try {
+              await readChatStream(response, event => {
+                if (event.type === "start" && event.conversationId) update({ conversationId: event.conversationId });
+                if (event.type === "delta") text += event.text;
+              });
+            } catch (error) {
+              recovered = await inspectChatRequest(fetcher, requestId, options.signal);
+              if (!recovered) throw error;
+              text = recovered.answer;
+              update({ conversationId: recovered.conversationId });
+            }
+          }
+        }
         if (options.signal.aborted) return;
         if (!text.trim()) throw new Error("The chat step returned no text.");
         patchStep(index, { state: "succeeded", text: text.slice(0, 40_000) });

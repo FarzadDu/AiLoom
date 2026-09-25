@@ -1,5 +1,6 @@
 export type SessionUser = { id: string; name?: string; email: string; role?: string };
-export type ConversationSummary = { id: string; title: string; updatedAt?: string };
+export type ConversationSummary = { id: string; title: string; projectId: string | null; updatedAt?: string };
+export type ChatProject = { id: string; name: string; description: string | null; updatedAt?: string };
 export type ChatSource = { url: string; title: string };
 export type MessageBlock = { type: "text" | "image" | "video" | "audio" | "file" | "sources"; text?: string; assetId?: string; alt?: string; url?: string; sources?: ChatSource[] };
 export type ChatMessage = { id: string; role: "user" | "assistant"; text: string; blocks?: MessageBlock[]; status?: "streaming" | "error" };
@@ -53,7 +54,22 @@ export function conversationsFromPayload(payload: unknown): ConversationSummary[
     const entry = record(item);
     const id = string(entry?.id);
     if (!id) return [];
-    return [{ id, title: string(entry?.title) || "Untitled conversation", updatedAt: string(entry?.updatedAt) }];
+    return [{ id, title: string(entry?.title) || "Untitled conversation",
+      projectId: string(entry?.projectId) ?? null, updatedAt: string(entry?.updatedAt) }];
+  });
+}
+
+export function projectsFromPayload(payload: unknown): ChatProject[] {
+  const root = record(payload);
+  const candidates = Array.isArray(payload) ? payload : root?.projects;
+  if (!Array.isArray(candidates)) return [];
+  return candidates.flatMap(item => {
+    const entry = record(item);
+    const id = string(entry?.id);
+    const name = string(entry?.name);
+    if (!id || !name) return [];
+    return [{ id, name, description: string(entry?.description) ?? null,
+      updatedAt: string(entry?.updatedAt) }];
   });
 }
 

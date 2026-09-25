@@ -36,6 +36,48 @@
       "when": 1790286600452,
       "tag": "0004_jazzy_human_cannonball",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1790290149222,
+      "tag": "0005_fancy_doctor_spectrum",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1790291469811,
+      "tag": "0006_voice_clone",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1790292552104,
+      "tag": "0007_lora_training",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1790292783929,
+      "tag": "0008_dubbing_v2",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1790293714494,
+      "tag": "0009_chat_image_idempotency",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1790294614129,
+      "tag": "0010_chat_text_idempotency",
+      "breakpoints": true
     }
   ]
 }

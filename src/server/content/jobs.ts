@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, desc, eq, isNull, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lte, ne, or } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db";
 import { generationJob } from "../db/schema";
@@ -34,7 +34,7 @@ function hydrate(row: typeof generationJob.$inferSelect) {
   return { ...row, input: decodeJson(row.inputJson), output: row.outputJson ? decodeJson(row.outputJson) : null };
 }
 
-const referenceKeys = new Set(["imageUrl", "videoUrl", "maskVideoUrl", "firstFrameUrl", "lastFrameUrl", "imageUrls", "videoUrls", "audioUrls"]);
+const referenceKeys = new Set(["imageUrl", "maskImageUrl", "videoUrl", "maskVideoUrl", "firstFrameUrl", "lastFrameUrl", "imageUrls", "videoUrls", "audioUrls"]);
 
 function comparableReferenceUrl(value: string): string {
   try {
@@ -102,11 +102,14 @@ export function getGenerationJob(ownerId: string, jobId: string) {
   return row ? hydrate(row) : null;
 }
 
-export function listGenerationJobs(ownerId: string, options: { limit?: number; state?: JobState } = {}) {
+export function listGenerationJobs(ownerId: string, options: {
+  limit?: number; state?: JobState; providerModel?: string;
+} = {}) {
   const limit = z.number().int().min(1).max(200).parse(options.limit ?? 50);
   const state = options.state ? z.enum(jobStates).parse(options.state) : undefined;
   return getDb().select().from(generationJob)
-    .where(and(eq(generationJob.ownerId, ownerId), state ? eq(generationJob.state, state) : undefined))
+    .where(and(eq(generationJob.ownerId, ownerId), state ? eq(generationJob.state, state) : undefined,
+      options.providerModel ? eq(generationJob.providerModel, options.providerModel) : undefined))
     .orderBy(desc(generationJob.createdAt), desc(generationJob.id)).limit(limit).all().map(hydrate);
 }
 
@@ -153,10 +156,12 @@ export function transitionGenerationJob(ownerId: string, jobId: string, input: {
 
 // Call from the trusted worker only. The state predicate ensures two workers
 // cannot claim the same queued job, even when they share the SQLite volume.
-export function claimNextQueuedJob(leaseOwner = randomUUID()) {
+export function claimNextQueuedJob(leaseOwner = randomUUID(), queue: "any" | "remote" | "local" = "any") {
   z.uuid().parse(leaseOwner);
   return getDb().transaction((tx) => {
-    const next = tx.select().from(generationJob).where(eq(generationJob.state, "queued"))
+    const next = tx.select().from(generationJob).where(and(eq(generationJob.state, "queued"),
+      queue === "local" ? eq(generationJob.provider, "local")
+        : queue === "remote" ? ne(generationJob.provider, "local") : undefined))
       .orderBy(asc(generationJob.createdAt), asc(generationJob.id)).limit(1).get();
     if (!next) return null;
     const now = new Date();
@@ -201,12 +206,13 @@ export function releaseGenerationJobLease(ownerId: string, jobId: string, leaseO
   return changed.changes === 1;
 }
 
-export function expireStaleSubmittingJob(ownerId: string, jobId: string): boolean {
+export function expireStaleSubmittingJob(ownerId: string, jobId: string,
+  errorCode = "submission_uncertain"): boolean {
   const now = new Date();
   const legacyGrace = new Date(now.getTime() - GENERATION_LEASE_MS);
   const changed = getDb().update(generationJob)
     .set({ state: "failed", leaseOwner: null, leaseExpiresAt: null,
-      errorCode: "submission_uncertain", updatedAt: now, completedAt: now })
+      errorCode, updatedAt: now, completedAt: now })
     .where(and(eq(generationJob.id, jobId), eq(generationJob.ownerId, ownerId),
       eq(generationJob.state, "submitting"), isNull(generationJob.externalId),
       or(lte(generationJob.leaseExpiresAt, now),

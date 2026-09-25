@@ -131,6 +131,21 @@ const qwenEditSchema = z.strictObject({
   imageSize: imageSize.optional(),
   outputFormat: imageFormat.optional()
 });
+const waveInpaintSchema = z.strictObject({
+  modelId: z.literal("wavespeed-ai/z-image/turbo-inpaint"),
+  operation: z.literal("image_inpaint"),
+  prompt,
+  imageUrl: safeUrl,
+  maskImageUrl: safeUrl
+});
+const ideogramCharacterSchema = z.strictObject({
+  modelId: z.literal("fal-ai/ideogram/character"),
+  operation: z.literal("character_to_image"),
+  prompt,
+  imageUrl: safeUrl,
+  imageSize: imageSize.optional(),
+  renderingSpeed: z.enum(["BALANCED", "QUALITY"]).optional()
+});
 const topazPrecisionSchema = z.strictObject({
   modelId: z.literal("topaz/upscale/image/precision"),
   operation: z.literal("image_upscale"),
@@ -225,6 +240,15 @@ const stableMusicSchema = z.strictObject({
   operation: z.literal("text_to_music"),
   prompt,
   durationSec: z.number().int().min(3).max(120).optional()
+});
+const soundEffectSchema = z.strictObject({
+  modelId: z.literal("fal-ai/stable-audio-3/small/sfx/text-to-audio"),
+  operation: z.literal("text_to_sound_effect"),
+  prompt,
+  durationSec: z.number().int().min(1).max(30),
+  negativePrompt: z.string().trim().max(1000).optional(),
+  outputFormat: z.enum(["mp3", "wav"]).optional(),
+  seed: z.number().int().min(0).max(2_147_483_647).optional()
 });
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -364,6 +388,26 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
       };
       break;
     }
+    case "wavespeed-ai/z-image/turbo-inpaint": {
+      const value = checked(waveInpaintSchema, input);
+      providerInput = { prompt: value.prompt, image: value.imageUrl, mask_image: value.maskImageUrl };
+      estimate = priceEstimate(0.02, "WaveSpeed Z Image Turbo Inpaint, one output image");
+      break;
+    }
+    case "fal-ai/ideogram/character": {
+      const value = checked(ideogramCharacterSchema, input);
+      const speed = value.renderingSpeed ?? "BALANCED";
+      providerInput = {
+        prompt: value.prompt,
+        reference_image_urls: [value.imageUrl],
+        image_size: value.imageSize ?? "square_hd",
+        rendering_speed: speed,
+        num_images: 1
+      };
+      estimate = priceEstimate(speed === "QUALITY" ? 0.20 : 0.15,
+        `fal Ideogram Character, one ${speed} image`);
+      break;
+    }
     case "topaz/upscale/image/precision": {
       const value = checked(topazPrecisionSchema, input);
       providerInput = {
@@ -471,6 +515,19 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
         bitrate: "192k"
       };
       // The playground shows a sample request price, not a duration formula.
+      break;
+    }
+    case "fal-ai/stable-audio-3/small/sfx/text-to-audio": {
+      const value = checked(soundEffectSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        duration: value.durationSec,
+        ...(value.negativePrompt ? { negative_prompt: value.negativePrompt } : {}),
+        ...(value.seed === undefined ? {} : { seed: value.seed }),
+        output_format: value.outputFormat ?? "mp3",
+        ...(value.outputFormat === "wav" ? {} : { bitrate: "192k" })
+      };
+      // Fal shows only a sample request price, not a per-duration cost formula.
       break;
     }
     default:

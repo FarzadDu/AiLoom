@@ -22,6 +22,118 @@ export type ElevenVoice = {
   previewUrl: string | null;
 };
 
+export async function createInstantVoice(options: {
+  name: string;
+  bytes: Buffer;
+  filename: string;
+  mimeType: "audio/mpeg" | "audio/wav" | "audio/ogg";
+  apiKey?: string;
+  fetcher?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<{ voiceId: string; requiresVerification: boolean }> {
+  if (!options.name.trim() || !options.bytes.length || options.bytes.length > 20_000_000) {
+    throw new Error("Invalid voice clone sample.");
+  }
+  const form = new FormData();
+  form.set("name", options.name);
+  form.append("files[]", new Blob([new Uint8Array(options.bytes)], { type: options.mimeType }), options.filename);
+  const response = await (options.fetcher ?? fetch)(BASE_URL + "/v1/voices/add", {
+    method: "POST", headers: { "xi-api-key": key(options.apiKey) },
+    body: form, signal: options.signal, cache: "no-store"
+  });
+  if (!response.ok) throw new ElevenLabsError(response.status);
+  const payload: unknown = await response.json();
+  if (!payload || typeof payload !== "object" || !("voice_id" in payload) ||
+    typeof payload.voice_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(payload.voice_id)) {
+    throw new Error("ElevenLabs returned an invalid voice ID.");
+  }
+  return { voiceId: payload.voice_id,
+    requiresVerification: "requires_verification" in payload && payload.requires_verification === true };
+}
+
+export async function getInstantVoiceVerification(options: {
+  voiceId: string;
+  apiKey?: string;
+  fetcher?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<"ready" | "verification_required" | "unknown"> {
+  const response = await (options.fetcher ?? fetch)(BASE_URL + "/v1/voices/" + encodeURIComponent(options.voiceId), {
+    headers: { "xi-api-key": key(options.apiKey) }, signal: options.signal, cache: "no-store"
+  });
+  if (!response.ok) throw new ElevenLabsError(response.status);
+  const payload: unknown = await response.json();
+  if (!payload || typeof payload !== "object" || !("voice_id" in payload) ||
+    payload.voice_id !== options.voiceId) throw new Error("ElevenLabs returned an invalid voice record.");
+  const verification = "voice_verification" in payload ? payload.voice_verification : null;
+  if (!verification || typeof verification !== "object") return "unknown";
+  if ("is_verified" in verification && verification.is_verified === true) return "ready";
+  if ("requires_verification" in verification && verification.requires_verification === false) return "ready";
+  if ("requires_verification" in verification && verification.requires_verification === true) {
+    return "verification_required";
+  }
+  return "unknown";
+}
+
+// Search is read-only. The exact provider name includes the local request UUID,
+// so an uncertain create can be linked without repeating the paid POST.
+export async function findInstantVoiceByExactName(options: {
+  name: string;
+  apiKey?: string;
+  fetcher?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<string | null> {
+  let nextPageToken: string | null = null;
+  let match: string | null = null;
+  for (let page = 0; page < 10; page++) {
+    const url = new URL(BASE_URL + "/v2/voices");
+    url.searchParams.set("page_size", "100");
+    url.searchParams.set("category", "cloned");
+    url.searchParams.set("search", options.name);
+    if (nextPageToken) url.searchParams.set("next_page_token", nextPageToken);
+    const response = await (options.fetcher ?? fetch)(url, {
+      headers: { "xi-api-key": key(options.apiKey) }, signal: options.signal, cache: "no-store"
+    });
+    if (!response.ok) throw new ElevenLabsError(response.status);
+    const payload: unknown = await response.json();
+    if (!payload || typeof payload !== "object" || !("voices" in payload) ||
+      !Array.isArray(payload.voices)) throw new Error("ElevenLabs returned an invalid voice list.");
+    for (const item of payload.voices) {
+      if (!item || typeof item !== "object" || !("name" in item) || item.name !== options.name ||
+        !("voice_id" in item) || typeof item.voice_id !== "string" ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(item.voice_id)) continue;
+      if (match && match !== item.voice_id) throw new Error("Several provider voices have this request name.");
+      match = item.voice_id;
+    }
+    if (!("has_more" in payload) || payload.has_more !== true) return match;
+    nextPageToken = "next_page_token" in payload && typeof payload.next_page_token === "string"
+      ? payload.next_page_token : null;
+    if (!nextPageToken) throw new Error("ElevenLabs voice search could not be completed.");
+  }
+  throw new Error("ElevenLabs voice search exceeded the safe page limit.");
+}
+
+async function boundedAudio(response: Response, limit: number): Promise<Buffer> {
+  const length = response.headers.get("content-length");
+  if (length !== null && Number(length) > limit) throw new Error("Speech output is too large.");
+  if (!response.body) throw new Error("ElevenLabs returned no speech output.");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error("Speech output is too large.");
+      }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  return Buffer.concat(chunks, total);
+}
+
 export async function listElevenVoices(options: {
   search?: string;
   apiKey?: string;
@@ -77,8 +189,7 @@ export async function synthesizeSpeech(options: {
     cache: "no-store"
   });
   if (!response.ok) throw new ElevenLabsError(response.status);
-  const bytes = await response.arrayBuffer();
-  return Buffer.from(bytes);
+  return boundedAudio(response, 20_000_000);
 }
 
 export type Transcript = {

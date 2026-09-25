@@ -12,6 +12,7 @@ import {
   Copy,
   Download,
   FileText,
+  FolderClosed,
   Image as ImageIcon,
   Layers3,
   MessageCircle,
@@ -33,20 +34,25 @@ import {
   type LucideIcon
 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type RefObject } from "react";
-import { conversationsFromPayload, messagesFromPayload, modelsFromPayload, readChatStream, responseError, sessionUserFromPayload, type ChatMessage, type ChatModel, type ConversationSummary, type SessionUser } from "./chat-api";
+import { conversationsFromPayload, messagesFromPayload, modelsFromPayload, projectsFromPayload, readChatStream, responseError, sessionUserFromPayload, type ChatMessage, type ChatModel, type ChatProject, type ConversationSummary, type SessionUser } from "./chat-api";
+import { ChatProjects, projectLabel } from "./chat-projects";
 import { ExplorePage as ConnectedExplorePage, SpecialistsPage as ConnectedSpecialistsPage } from "./content-pages";
-import { libraryPageFromPayload, mediaAssetsFromJob, mediaDownloadName, mediaJobFromPayload, mediaModelsFromPayload, type LibraryAsset, type MediaAsset, type MediaJob, type MediaModel } from "./media-api";
+import { libraryPageFromPayload, mediaAssetsFromJob, mediaDownloadName, mediaJobFromPayload, mediaModelsFromPayload, mediaViewForJob, type LibraryAsset, type MediaAsset, type MediaJob, type MediaModel } from "./media-api";
 import { copy, mediaViews, modelOptions, views, type Locale, type MediaView, type Theme, type View } from "./workspace-data";
 import { clearStoredDrafts, emptyDrafts, readUserDrafts, writeUserDrafts, type Drafts } from "./workspace-privacy";
 import { speakerTurns, transcriptDownloadName, transcriptFromPayload, type TranscriptResult } from "./transcription-ui";
 import { upscalePresets, upscaleRequest, upscaleRequestIdentity, type UpscalePreset, type UpscaleSettings } from "./upscale-request";
 import { firstLastRequestIdentity, type FirstLastControls } from "./first-last-request";
 import { repairRequestIdentity } from "./repair-request";
+import { InpaintCanvas } from "./inpaint-canvas";
+import { ChatVoiceInput } from "./chat-voice-input";
+import { generationRequestIdentity, parsePendingGeneration } from "./generation-idempotency";
+import { parsePendingChatTurn, samePendingTurn, type ChatTurnInput, type PendingChatTurn } from "./chat-turn-idempotency";
 
 type Models = Record<View, string>;
 type LocalFile = { name: string; mime: string; url: string; file?: File; assetId?: string };
 type OutputTab = "text" | "image" | "video" | "audio";
-type StudioRequestOptions = { modeIndex: number; aspect: string; quality: string; duration: number | "auto"; audio: boolean; modelId: string; language: string; repairStart: number; repairEnd: number; upscale: UpscaleSettings; lastFrame?: File; musicDurationSec: number; forceInstrumental: boolean };
+type StudioRequestOptions = { modeIndex: number; aspect: string; quality: string; duration: number | "auto"; audio: boolean; modelId: string; language: string; repairStart: number; repairEnd: number; upscale: UpscaleSettings; lastFrame?: File; maskFile?: File; musicDurationSec: number; forceInstrumental: boolean };
 
 const navIcons: Record<View, LucideIcon> = {
   chat: MessageCircle,
@@ -169,16 +175,18 @@ function Header({ locale, theme, view, user, onLocale, onTheme, onNavigate, onLo
   );
 }
 
-function ChatComposer({ locale, prompt, onPrompt, model, onModel, modelList, mode, onMode, webSearch, onWebSearch, onSubmit, attachment, onAttach, onRemoveAttachment, inputRef, compact = false, disabled = false }: {
+function ChatComposer({ locale, prompt, onPrompt, model, onModel, modelList, mode, onMode, webSearch, onWebSearch, onSubmit, attachment, onAttach, onRemoveAttachment, inputRef, compact = false, disabled = false, voiceEnabled = false }: {
   locale: Locale; prompt: string; onPrompt: (value: string) => void; model: string; onModel: (value: string) => void;
   mode: "text" | "image"; onMode: (mode: "text" | "image") => void;
   webSearch: boolean; onWebSearch: (enabled: boolean) => void;
   onSubmit: () => void; attachment: LocalFile | null; onAttach: (event: ChangeEvent<HTMLInputElement>) => void;
   onRemoveAttachment: () => void; inputRef: RefObject<HTMLTextAreaElement | null>; modelList?: ChatModel[];
-  compact?: boolean; disabled?: boolean;
+  compact?: boolean; disabled?: boolean; voiceEnabled?: boolean;
 }) {
   const t = copy[locale];
   const fileRef = useRef<HTMLInputElement>(null);
+  const promptValueRef = useRef(prompt);
+  promptValueRef.current = prompt;
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); onSubmit(); };
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -200,6 +208,7 @@ function ChatComposer({ locale, prompt, onPrompt, model, onModel, modelList, mod
           <button type="button" className="attach-button" onClick={() => fileRef.current?.click()} aria-label={t.attach}><Plus size={20} /></button>
           <button type="button" className="chat-image-mode" aria-label={mode === "image" ? t.chatTextModeHint : t.chatImageModeHint} aria-pressed={mode === "image"} title={mode === "image" ? t.chatTextModeHint : t.chatImageModeHint} disabled={disabled} onClick={() => onMode(mode === "image" ? "text" : "image")}><ImageIcon size={18} aria-hidden="true" /><span>{t.chatImageMode}</span></button>
           {mode === "text" && <button type="button" className="chat-web-mode" aria-label={attachment ? t.webSearchNoImage : t.webSearchHint} aria-pressed={webSearch} title={attachment ? t.webSearchNoImage : t.webSearchHint} disabled={disabled || Boolean(attachment)} onClick={() => onWebSearch(!webSearch)}><Compass size={18} aria-hidden="true" /><span>{t.webSearch}</span></button>}
+          {voiceEnabled && mode === "text" && <ChatVoiceInput locale={locale} disabled={disabled} onTranscript={text => onPrompt([promptValueRef.current.trim(), text].filter(Boolean).join(" "))} />}
           <ModelPicker view="chat" locale={locale} value={model} onChange={onModel} options={modelList} />
         </div>
         <button className="send-button" type="submit" disabled={disabled}><span>{t.send}</span><ArrowUp size={19} aria-hidden="true" /></button>
@@ -265,9 +274,16 @@ function ChatLanding({ locale, prompt, setPrompt, model, setModel, modelList, mo
   );
 }
 
-function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId, messages, messageLoading, pending, error, prompt, onPrompt, model, onModel, modelList, mode, onMode, webSearch, onWebSearch, onSend, onSelect, onNew, attachment, onAttach, onRemoveAttachment, inputRef }: {
+function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId, projects, selectedProjectId, projectBusy, projectError, onSelectProject, onCreateProject, onUpdateProject, onDeleteProject, onMoveConversation, messages, messageLoading, pending, error, showSeparateRequest, previousRequestId, onSeparateRequest, prompt, onPrompt, model, onModel, modelList, mode, onMode, webSearch, onWebSearch, onSend, onSelect, onNew, attachment, onAttach, onRemoveAttachment, inputRef }: {
   locale: Locale; user: SessionUser; conversations: ConversationSummary[]; historyLoading: boolean; selectedId: string | null;
+  projects: ChatProject[]; selectedProjectId: string | null; projectBusy: boolean; projectError: string;
+  onSelectProject: (id: string | null) => void;
+  onCreateProject: (name: string, description: string | null) => Promise<boolean>;
+  onUpdateProject: (id: string, name: string, description: string | null) => Promise<boolean>;
+  onDeleteProject: (id: string) => Promise<boolean>;
+  onMoveConversation: (id: string, projectId: string | null) => void;
   messages: ChatMessage[]; messageLoading: boolean; pending: boolean; error: string;
+  showSeparateRequest: boolean; previousRequestId: string | null; onSeparateRequest: () => void;
   prompt: string; onPrompt: (value: string) => void; model: string; onModel: (value: string) => void; modelList: ChatModel[];
   mode: "text" | "image"; onMode: (mode: "text" | "image") => void;
   webSearch: boolean; onWebSearch: (enabled: boolean) => void;
@@ -279,18 +295,28 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages]);
   const activeTitle = conversations.find(item => item.id === selectedId)?.title ?? t.newChat;
+  const visibleConversations = selectedProjectId
+    ? conversations.filter(item => item.projectId === selectedProjectId) : conversations;
+  const activeProject = projects.find(item => item.id === selectedProjectId) ?? null;
   return (
     <section className="chat-workspace" aria-label={t.nav.chat}>
       <aside className="chat-history" aria-label={t.conversationHistory}>
         <div className="chat-history-header"><strong>{t.conversationHistory}</strong><button type="button" aria-label={t.newChat} onClick={onNew}><Plus size={19} /></button></div>
         <button type="button" className="new-chat-button" onClick={onNew}><Plus size={17} aria-hidden="true" />{t.newChat}</button>
+        <ChatProjects locale={locale} projects={projects} selectedId={selectedProjectId} busy={projectBusy || pending} error={projectError}
+          onSelect={onSelectProject} onCreate={onCreateProject} onUpdate={onUpdateProject} onDelete={onDeleteProject} />
         <div className="history-list">
-          {historyLoading ? <p className="history-empty">{t.loadingConversations}</p> : conversations.length ? conversations.map(item => <button key={item.id} type="button" aria-current={selectedId === item.id ? "page" : undefined} onClick={() => onSelect(item.id)}><MessageCircle size={16} aria-hidden="true" /><span>{item.title}</span></button>) : <p className="history-empty">{t.noConversations}</p>}
+          {historyLoading ? <p className="history-empty">{t.loadingConversations}</p> : visibleConversations.length ? visibleConversations.map(item => <button key={item.id} type="button" aria-current={selectedId === item.id ? "page" : undefined} onClick={() => onSelect(item.id)}><MessageCircle size={16} aria-hidden="true" /><span>{item.title}</span></button>) : <p className="history-empty">{t.noConversations}</p>}
         </div>
         <div className="history-user"><span className="user-avatar" aria-hidden="true">{(user.name?.trim()[0] || user.email[0] || "A").toUpperCase()}</span><span><strong>{user.name || user.email}</strong><small>{user.email}</small></span></div>
       </aside>
       <div className="chat-main">
-        <div className="chat-main-header"><span><MessageCircle size={19} aria-hidden="true" /><strong>{activeTitle}</strong></span><span className="chat-model-badge">{modelList.find(item => item.id === model)?.name ?? t.smartChoice}</span></div>
+        <div className="chat-main-header"><span><MessageCircle size={19} aria-hidden="true" /><strong>{activeTitle}</strong></span><div className="chat-main-meta"><label className="chat-project-picker"><FolderClosed size={15} aria-hidden="true" /><select aria-label={locale === "fa" ? "پروژهٔ گفتگو" : "Conversation project"} value={selectedProjectId ?? ""} disabled={projectBusy || pending} onChange={event => {
+          const projectId = event.target.value || null;
+          if (selectedId) onMoveConversation(selectedId, projectId);
+          else onSelectProject(projectId);
+        }}><option value="">{projectLabel(locale, null)}</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><span className="chat-model-badge">{modelList.find(item => item.id === model)?.name ?? t.smartChoice}</span></div></div>
+        {activeProject?.description && <div className="chat-project-note" title={locale === "fa" ? "در چت متنی برای OpenRouter ارسال می‌شود" : "Sent to OpenRouter in text chats"}><FolderClosed size={14} aria-hidden="true" /><span>{activeProject.description}</span></div>}
         <div className="messages-area" role="log" aria-live="polite" aria-label={t.nav.chat}>
           {messageLoading ? <div className="chat-empty"><p>{t.loadingMessages}</p></div>
             : messages.length ? <div className="message-stack">{messages.map(message =>
@@ -310,8 +336,9 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId
             : <div className="chat-empty"><BrandMark /><h1>{t.chatHeadingFirst}<br /><em>{t.chatHeadingSecond}</em></h1><p>{t.noMessages}</p></div>}
         </div>
         <div className="chat-compose-wrap">
-          {error && <div className="chat-error" role="alert">{error}</div>}
-          <ChatComposer locale={locale} prompt={prompt} onPrompt={onPrompt} model={model} onModel={onModel} modelList={modelList} mode={mode} onMode={onMode} webSearch={webSearch} onWebSearch={onWebSearch} onSubmit={onSend} attachment={attachment} onAttach={onAttach} onRemoveAttachment={onRemoveAttachment} inputRef={inputRef} compact disabled={pending} />
+          {error && <div className="chat-error" role="alert">{error}{showSeparateRequest && <button type="button" onClick={onSeparateRequest}>{locale === "fa" ? "شروع درخواست جداگانه" : "Start a separate request"}</button>}</div>}
+          {previousRequestId && <a className="chat-previous-request" href={`/api/chat?requestId=${encodeURIComponent(previousRequestId)}`} target="_blank" rel="noopener noreferrer">{locale === "fa" ? "بررسی وضعیت درخواست قبلی" : "Check previous request status"}</a>}
+          <ChatComposer locale={locale} prompt={prompt} onPrompt={onPrompt} model={model} onModel={onModel} modelList={modelList} mode={mode} onMode={onMode} webSearch={webSearch} onWebSearch={onWebSearch} onSubmit={onSend} attachment={attachment} onAttach={onAttach} onRemoveAttachment={onRemoveAttachment} inputRef={inputRef} compact disabled={pending} voiceEnabled />
           <p className="chat-compose-note">{t.draftSaved}</p>
         </div>
       </div>
@@ -518,6 +545,8 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   const [upscaleFactor, setUpscaleFactor] = useState<2 | 4>(2);
   const [upscalePreset, setUpscalePreset] = useState<UpscalePreset>("Standard V2");
   const [upscaleFormat, setUpscaleFormat] = useState<"jpeg" | "png">("jpeg");
+  const [inpaintMask, setInpaintMask] = useState<File | null>(null);
+  const [showCharacterOutput, setShowCharacterOutput] = useState(false);
   const [lastFrame, setLastFrame] = useState<LocalFile | null>(null);
   const [lastFrameError, setLastFrameError] = useState("");
   const [library, setLibrary] = useState<LibraryAsset[]>([]);
@@ -530,36 +559,51 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const libraryMoreController = useRef<AbortController | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const tabsRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const lastFrameRef = useRef<HTMLInputElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const CurrentIcon = navIcons[view];
   const tabs = t.studioTab[view];
-  const activeOperation = view === "image" ? activeMode === 0 ? "text_to_image" : activeMode === 1 ? "image_edit" : "image_upscale"
+  const activeOperation = view === "image" ? activeMode === 0 ? "text_to_image" : activeMode === 1 ? "image_edit" : activeMode === 2 ? "image_upscale" : activeMode === 3 ? "image_inpaint" : "character_to_image"
     : view === "video" ? activeMode === 0 ? "text_to_video" : activeMode === 1 ? "reference_to_video" : activeMode === 2 ? "temporal_inpaint" : "first_last_frame_to_video"
     : activeMode === 0 ? "text_to_speech" : activeMode === 1 ? "text_to_music" : null;
   const relevantModels = activeOperation ? availableModels.filter(item => item.operations.includes(activeOperation) || activeOperation === "reference_to_video" && item.operations.includes("image_to_video")) : [];
   const fallbackModels = modelOptions[view].filter(item => activeOperation === "image_edit" ? item.id === "fal-ai/qwen-image-edit"
+    : activeOperation === "image_inpaint" ? item.id === "wavespeed-ai/z-image/turbo-inpaint"
+    : activeOperation === "character_to_image" ? item.id === "fal-ai/ideogram/character"
     : activeOperation === "image_upscale" ? item.id === "topaz/upscale/image/precision"
     : activeOperation === "temporal_inpaint" ? item.id === "fal-ai/ltx-2.3-quality/inpaint"
     : activeOperation === "first_last_frame_to_video" ? item.id === "fal-ai/veo3.1/fast/first-last-frame-to-video"
     : activeOperation === "reference_to_video" ? item.id === "bytedance/seedance-2.5/reference-to-video" || item.id === "fal-ai/veo3.1/fast/image-to-video"
-    : activeOperation === "text_to_image" ? item.id !== "fal-ai/qwen-image-edit" && item.id !== "topaz/upscale/image/precision"
+    : activeOperation === "text_to_image" ? item.id !== "fal-ai/qwen-image-edit" && item.id !== "topaz/upscale/image/precision" && item.id !== "wavespeed-ai/z-image/turbo-inpaint" && item.id !== "fal-ai/ideogram/character"
     : activeOperation === "text_to_video" ? item.id === "fal-ai/veo3.1/fast" || item.id === "bytedance/seedance-2.5/text-to-video"
     : activeOperation === "text_to_speech" ? item.id === "fal-ai/elevenlabs/tts/eleven-v3"
     : activeOperation === "text_to_music" ? item.id === "elevenlabs/music/v2" || item.id === "fal-ai/stable-audio-3/small/music/text-to-audio" : true);
   const selectModels = relevantModels.length ? relevantModels : fallbackModels.map(item => ({ id: item.id, name: item.label }));
   const effectiveModel = selectModels.some(item => item.id === model) ? model : selectModels[0]?.id || model;
   const effectiveMusicDuration = effectiveModel === "elevenlabs/music/v2" ? musicDurationSec : Math.min(musicDurationSec, 120);
-  const displayJob = view !== "audio" || !job || activeMode === 0 && job.providerModel === "fal-ai/elevenlabs/tts/eleven-v3" ||
+  const displayJob = view === "image" && activeMode === 4 && job?.providerModel !== "fal-ai/ideogram/character" ? null
+    : view !== "audio" || !job || activeMode === 0 && job.providerModel === "fal-ai/elevenlabs/tts/eleven-v3" ||
     activeMode === 1 && (job.providerModel === "elevenlabs/music/v2" || job.providerModel === "fal-ai/stable-audio-3/small/music/text-to-audio") ? job : null;
   const outputAssets = mediaAssetsFromJob(displayJob);
   const selectedAsset = library.find(asset => asset.id === selectedAssetId);
   const shownAssets: MediaAsset[] = selectedAsset ? [{ id: selectedAsset.id, kind: selectedAsset.kind,
     url: selectedAsset.url, contentType: selectedAsset.mimeType }] : outputAssets;
   const completedJobId = job?.state === "succeeded" ? job.id : "";
+  useEffect(() => {
+    const strip = tabsRef.current;
+    const selected = strip?.querySelector<HTMLButtonElement>('[aria-pressed="true"]');
+    if (!strip || !selected) return;
+    const stripBox = strip.getBoundingClientRect();
+    const buttonBox = selected.getBoundingClientRect();
+    const distance = buttonBox.left + buttonBox.width / 2 - stripBox.left - stripBox.width / 2;
+    strip.scrollBy({ left: distance,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }, [activeMode, locale, view]);
   useEffect(() => () => { if (lastFrame?.url) URL.revokeObjectURL(lastFrame.url); }, [lastFrame?.url]);
   useEffect(() => { if (job?.id) setLastFrame(null); }, [job?.id]);
+  useEffect(() => { if (job?.providerModel === "fal-ai/ideogram/character") setShowCharacterOutput(true); }, [job?.id, job?.providerModel]);
   useEffect(() => { setSelectedAssetId(null); }, [job?.id]);
   useEffect(() => {
     libraryMoreController.current?.abort();
@@ -616,17 +660,35 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
       block: "start"
     }));
   };
-  const accept = view === "image" || view === "video" && (activeMode === 1 || activeMode === 3) ? "image/png,image/jpeg,image/webp" : view === "video" ? "video/mp4,video/webm" : "";
+  const accept = view === "image" && activeMode === 3 ? "image/png,image/jpeg"
+    : view === "image" || view === "video" && (activeMode === 1 || activeMode === 3) ? "image/png,image/jpeg,image/webp" : view === "video" ? "video/mp4,video/webm" : "";
   const showRepair = view === "video" && activeMode === 2;
   const showFirstLast = view === "video" && activeMode === 3;
   const showUpscale = view === "image" && activeMode === 2;
+  const showInpaint = view === "image" && activeMode === 3;
+  const showCharacter = view === "image" && activeMode === 4;
   const upscaleWorking = showUpscale && Boolean(job && ["queued", "submitting", "running"].includes(job.state));
+  const inpaintWorking = showInpaint && Boolean(job && ["queued", "submitting", "running"].includes(job.state));
+  const characterWorking = showCharacter && Boolean(job && job.providerModel === "fal-ai/ideogram/character" && ["queued", "submitting", "running"].includes(job.state));
   const audioWorking = view === "audio" && Boolean(job && ["queued", "submitting", "running"].includes(job.state));
-  const needsReference = view === "image" && (activeMode === 1 || activeMode === 2) || view === "video" && (activeMode === 1 || activeMode === 2 || activeMode === 3);
+  const needsReference = view === "image" && (activeMode === 1 || activeMode === 2 || activeMode === 3 || activeMode === 4) || view === "video" && (activeMode === 1 || activeMode === 2 || activeMode === 3);
   const seedance = effectiveModel.startsWith("bytedance/seedance-2.5/");
   const handleGenerate = () => {
     if (showUpscale && !preview) { fileRef.current?.click(); return; }
+    if (showInpaint && !preview) { fileRef.current?.click(); return; }
+    if (showCharacter && !preview) { fileRef.current?.click(); return; }
     if (!showUpscale && !draft.trim()) { promptRef.current?.focus(); return; }
+    if (showInpaint && (!preview?.file || !["image/png", "image/jpeg"].includes(preview.file.type) ||
+      preview.file.size === 0 || preview.file.size > 8_000_000)) {
+      setLastFrameError(t.inpaintInvalid);
+      return;
+    }
+    if (showInpaint && !inpaintMask) { setLastFrameError(t.inpaintMissing); return; }
+    if (showCharacter && (!preview?.file || !["image/png", "image/jpeg", "image/webp"].includes(preview.file.type) ||
+      preview.file.size === 0 || preview.file.size > 10_000_000)) {
+      setLastFrameError(t.characterInvalid);
+      return;
+    }
     if (showFirstLast && (!preview || !lastFrame?.file)) {
       setLastFrameError(t.firstLastMissing);
       (preview ? lastFrameRef : fileRef).current?.click();
@@ -644,9 +706,10 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
     onSubmit({ modeIndex: activeMode, aspect, quality, duration, audio: generateAudio, modelId: effectiveModel, language, repairStart, repairEnd,
       musicDurationSec: effectiveMusicDuration, forceInstrumental,
       upscale: { factor: upscaleFactor, preset: upscalePreset, outputFormat: upscaleFormat },
+      ...(showInpaint && inpaintMask ? { maskFile: inpaintMask } : {}),
       ...(showFirstLast && lastFrame?.file ? { lastFrame: lastFrame.file } : {}) });
   };
-  const handleFile = (event: ChangeEvent<HTMLInputElement>) => { onFile(event); setLastFrameError(""); event.currentTarget.value = ""; };
+  const handleFile = (event: ChangeEvent<HTMLInputElement>) => { onFile(event); setInpaintMask(null); setShowCharacterOutput(false); setLastFrameError(""); event.currentTarget.value = ""; };
   const handleLastFrame = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
@@ -669,7 +732,10 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   return (
     <section className="studio-page" aria-labelledby="studio-title">
       <div className="workspace-heading"><div><span className="section-eyebrow">{t.studioEyebrow}</span><h1 id="studio-title">{t.studioTitle[view]}</h1><p>{t.studioDescription[view]}</p></div><span className="page-indicator"><CurrentIcon size={18} aria-hidden="true" />{t.nav[view]}</span></div>
-      <div className="studio-tabs" role="group" aria-label={t.studioTitle[view]}>{tabs.map((name, index) => <button type="button" key={name} aria-pressed={activeMode === index} onClick={() => { if (index !== activeMode) { setActiveMode(index); setLastFrame(null); onLastFrameChange(); setLastFrameError(""); onRemoveFile(); } }}>{name}</button>)}</div>
+      <div className="studio-tabs" ref={tabsRef} role="group" aria-label={t.studioTitle[view]}>{tabs.map((name, index) => <button type="button" key={name} aria-pressed={activeMode === index} onClick={() => { if (index !== activeMode) { setActiveMode(index); setInpaintMask(null); setLastFrame(null); onLastFrameChange(); setLastFrameError(""); onRemoveFile(); } }}>{name}</button>)}</div>
+      {view === "image" && <div className="studio-tool-links"><a href="/image/editor">{t.layersTool}<ArrowRight size={15} aria-hidden="true" /></a><a href="/lora">{t.loraTool}<ArrowRight size={15} aria-hidden="true" /></a></div>}
+      {view === "video" && <div className="studio-tool-links"><a href="/storyboards">{t.storyboardTool}<ArrowRight size={15} aria-hidden="true" /></a><a href="/video/captions">{t.captionsTool}<ArrowRight size={15} aria-hidden="true" /></a></div>}
+      {view === "audio" && <div className="studio-tool-links"><a href="/audio/voices">{t.voicesTool}<ArrowRight size={15} aria-hidden="true" /></a><a href="/audio/dubbing">{t.dubbingTool}<ArrowRight size={15} aria-hidden="true" /></a><a href="/audio/effects">{t.effectsTool}<ArrowRight size={15} aria-hidden="true" /></a></div>}
       {view === "audio" && activeMode === 2 ? <TranscriptionPanel locale={locale} signedIn={signedIn} onLogin={onLogin} /> : <>
       <div className="studio-layout">
         <div className="canvas-column" ref={canvasRef}>
@@ -677,7 +743,10 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
           <div className={`studio-canvas studio-canvas-${view}`}>
             {selectedAsset ? <div className="generated-results"><GeneratedResult key={selectedAsset.id} asset={shownAssets[0]} locale={locale} initialVisibility={selectedAsset.visibility} onVisibilityChange={visibility => onVisibilityChange(selectedAsset.id, visibility)} /></div>
               : showFirstLast && (preview || lastFrame) ? <div className="frame-pair"><div className="frame-card"><strong>{t.firstFrame}</strong>{preview?.mime.startsWith("image/") ? <img src={preview.url} alt={preview.name} /> : <button type="button" onClick={() => fileRef.current?.click()}>{t.chooseFirstFrame}</button>}</div><div className="frame-card"><strong>{t.lastFrame}</strong>{lastFrame ? <img src={lastFrame.url} alt={lastFrame.name} /> : <button type="button" onClick={() => lastFrameRef.current?.click()}>{t.chooseLastFrame}</button>}</div></div>
-              : preview ? ((view === "image" || view === "video" && activeMode === 1) && preview.mime.startsWith("image/") ? <img className="uploaded-media" src={preview.url} alt={preview.name} /> : view === "video" && preview.mime.startsWith("video/") ? <video className="uploaded-media" src={preview.url} controls onLoadedMetadata={event => handleMetadata(event.currentTarget.duration)} /> : null)
+              : preview && !(showCharacter && showCharacterOutput && displayJob) ? (showInpaint && ["image/png", "image/jpeg"].includes(preview.mime) ? <InpaintCanvas key={preview.url} src={preview.url} alt={preview.name}
+                  labels={{ brush: t.inpaintBrush, clear: t.inpaintClear, hint: t.inpaintHint, invalid: t.inpaintInvalid }}
+                  onMaskChange={setInpaintMask} />
+                : (view === "image" || view === "video" && activeMode === 1) && preview.mime.startsWith("image/") ? <img className="uploaded-media" src={preview.url} alt={preview.name} /> : view === "video" && preview.mime.startsWith("video/") ? <video className="uploaded-media" src={preview.url} controls onLoadedMetadata={event => handleMetadata(event.currentTarget.duration)} /> : null)
               : displayJob?.state === "succeeded" && shownAssets.length ? <div className="generated-results">{shownAssets.map((asset, index) => <GeneratedResult asset={asset} locale={locale} onVisibilityChange={asset.id ? visibility => onVisibilityChange(asset.id!, visibility) : undefined} key={asset.id ?? asset.url + index} />)}</div>
               : displayJob?.state === "succeeded" ? <div className="job-status"><Check size={27} aria-hidden="true" /><strong>{t.generationDone}</strong><p>{t.generationOutputMissing}</p></div>
               : displayJob && ["queued", "submitting", "running"].includes(displayJob.state) ? <div className="job-status"><span className="job-spinner" aria-hidden="true" /><strong>{displayJob.state === "running" ? t.generationRunning : t.generationQueued}</strong><p>{t.generationHint}</p></div>
@@ -690,6 +759,8 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
            {showRepair && <div className="timeline"><div className="timeline-header"><span><Clock3 size={15} aria-hidden="true" />00:00</span><span>{Math.floor(clipDuration / 60).toString().padStart(2, "0")}:{(clipDuration % 60).toString().padStart(2, "0")}</span></div><div className="timeline-track"><div className="timeline-selection" style={{ insetInlineStart: `${repairStart / clipDuration * 100}%`, width: `${Math.max(2, (repairEnd - repairStart) / clipDuration * 100)}%` }} /></div><span className="timeline-caption">{t.repairHint}</span></div>}
           {view === "audio" && <div className="canvas-footnote"><AudioLines size={17} aria-hidden="true" />{activeMode === 1 ? t.musicModeHint : t.audioModeHint}</div>}
            {view === "image" && activeMode === 1 && <div className="canvas-footnote"><Layers3 size={17} aria-hidden="true" />{t.imageModeHint}</div>}
+           {showInpaint && <div className="canvas-footnote"><Layers3 size={17} aria-hidden="true" />{t.inpaintHint}</div>}
+           {showCharacter && <div className="canvas-footnote"><Layers3 size={17} aria-hidden="true" />{t.characterHint}</div>}
            {showUpscale && <div className="canvas-footnote"><Layers3 size={17} aria-hidden="true" />{t.upscaleModeHint}</div>}
            {showFirstLast && <div className="canvas-footnote"><Layers3 size={17} aria-hidden="true" />{t.firstLastHint}</div>}
         </div>
@@ -697,7 +768,9 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
            <div className="inspector-heading"><span><SlidersHorizontal size={19} aria-hidden="true" />{t.input}</span>{needsReference && <button type="button" className="inspector-icon" aria-label={t.attach} onClick={() => fileRef.current?.click()}><Paperclip size={18} /></button>}</div>
            {needsReference && <input ref={fileRef} className="sr-only" type="file" accept={accept} onChange={handleFile} aria-label={t.dropFile} />}
            {showFirstLast && <input ref={lastFrameRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleLastFrame} aria-label={t.chooseLastFrame} />}
-          {preview && <div className="file-chip"><span title={preview.name}>{showFirstLast ? `${t.firstFrame}: ` : ""}{preview.name}</span><button type="button" aria-label={t.removeFile} onClick={onRemoveFile}><X size={15} /></button></div>}
+          {preview && <div className="file-chip"><span title={preview.name}>{showFirstLast ? `${t.firstFrame}: ` : ""}{preview.name}</span><button type="button" aria-label={t.removeFile} onClick={() => { setInpaintMask(null); setShowCharacterOutput(false); onRemoveFile(); }}><X size={15} /></button></div>}
+          {showCharacter && showCharacterOutput && preview?.mime.startsWith("image/") &&
+            <img className="character-reference-thumb" src={preview.url} alt={preview.name} />}
           {showFirstLast && lastFrame && <div className="file-chip"><span title={lastFrame.name}>{t.lastFrame}: {lastFrame.name}</span><button type="button" aria-label={t.removeFile} onClick={() => { setLastFrame(null); onLastFrameChange(); }}><X size={15} /></button></div>}
           {showFirstLast && !lastFrame && <button className="media-library-refresh" type="button" onClick={() => lastFrameRef.current?.click()}><Upload size={16} aria-hidden="true" />{t.chooseLastFrame}</button>}
           {!showUpscale && <><label className="field-label" htmlFor="studio-prompt">{t.prompt}</label>
@@ -705,8 +778,8 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
           <div className="inspector-divider" />
           <div className="inspector-heading subtle"><span>{t.settings}</span></div>
           <div className="form-field"><label htmlFor="studio-model">{t.model}</label><div className="select-shell"><select id="studio-model" value={effectiveModel} onChange={event => onModel(event.target.value)} disabled={!selectModels.length}>{selectModels.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</select><ChevronDown size={16} aria-hidden="true" /></div></div>
-           {view !== "audio" && !showUpscale && effectiveModel !== "nano-banana-2" && <div className="form-field"><label htmlFor="aspect-ratio">{t.aspectRatio}</label><div className="select-shell"><select id="aspect-ratio" value={view === "video" && !seedance ? aspect === "9:16" ? "9:16" : "16:9" : aspect} onChange={event => setAspect(event.target.value)}>{seedance && <option value="auto">{t.automatic}</option>}{seedance && <option value="21:9">21:9</option>}<option value="16:9">16:9</option>{(view === "image" || seedance) && <option value="1:1">1:1</option>}{(view === "image" || seedance) && <option value="4:3">4:3</option>}{seedance && <option value="3:4">3:4</option>}<option value="9:16">9:16</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
-           {!showUpscale && (view === "video" && !showRepair || view === "image" && effectiveModel !== "nano-banana-2") && <div className="form-field"><label htmlFor="media-quality">{t.quality}</label><div className="select-shell"><select id="media-quality" value={seedance ? quality : quality === "low" ? "standard" : quality} onChange={event => setQuality(event.target.value)}>{seedance && <option value="low">480p</option>}<option value="standard">{seedance ? "720p" : t.standard}</option><option value="high">{seedance ? "1080p" : t.high}</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
+           {view !== "audio" && !showUpscale && !showInpaint && effectiveModel !== "nano-banana-2" && <div className="form-field"><label htmlFor="aspect-ratio">{t.aspectRatio}</label><div className="select-shell"><select id="aspect-ratio" value={view === "video" && !seedance ? aspect === "9:16" ? "9:16" : "16:9" : aspect} onChange={event => setAspect(event.target.value)}>{seedance && <option value="auto">{t.automatic}</option>}{seedance && <option value="21:9">21:9</option>}<option value="16:9">16:9</option>{(view === "image" || seedance) && <option value="1:1">1:1</option>}{(view === "image" || seedance) && <option value="4:3">4:3</option>}{seedance && <option value="3:4">3:4</option>}<option value="9:16">9:16</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
+           {!showUpscale && !showInpaint && (view === "video" && !showRepair || view === "image" && effectiveModel !== "nano-banana-2") && <div className="form-field"><label htmlFor="media-quality">{t.quality}</label><div className="select-shell"><select id="media-quality" value={seedance ? quality : quality === "low" ? "standard" : quality} onChange={event => setQuality(event.target.value)}>{seedance && <option value="low">480p</option>}<option value="standard">{seedance ? "720p" : t.standard}</option><option value="high">{seedance ? "1080p" : t.high}</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
           {showUpscale && <>
             <div className="form-field"><label htmlFor="upscale-factor">{t.upscaleFactor}</label><div className="select-shell"><select id="upscale-factor" value={upscaleFactor} onChange={event => setUpscaleFactor(Number(event.target.value) as 2 | 4)}><option value={2}>2×</option><option value={4}>4×</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>
             <div className="form-field"><label htmlFor="upscale-preset">{t.upscalePreset}</label><div className="select-shell"><select id="upscale-preset" value={upscalePreset} onChange={event => setUpscalePreset(event.target.value as UpscalePreset)}>{upscalePresets.map(preset => <option value={preset} key={preset}>{preset}</option>)}</select><ChevronDown size={16} aria-hidden="true" /></div></div>
@@ -719,8 +792,10 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
           {view === "audio" && activeMode === 1 && effectiveModel === "elevenlabs/music/v2" && <label className="toggle-field"><input type="checkbox" checked={forceInstrumental} onChange={event => setForceInstrumental(event.target.checked)} /><span>{t.musicInstrumental}</span></label>}
           {showRepair && <div className="repair-controls"><div className="repair-title"><Scissors size={17} aria-hidden="true" /><strong>{t.repairRange}</strong></div><p>{preview ? t.repairHint : t.noClip}</p><div className="repair-fields"><div className="form-field"><label htmlFor="repair-start">{t.startTime}</label><div className="input-suffix"><input id="repair-start" type="number" min={0} max={Math.max(0, repairEnd - 1)} step={0.1} value={repairStart} onChange={event => setRepairStart(Math.max(0, Math.min(repairEnd - .1, Number(event.target.value) || 0)))} /><span>s</span></div></div><div className="form-field"><label htmlFor="repair-end">{t.endTime}</label><div className="input-suffix"><input id="repair-end" type="number" min={repairStart + .1} max={clipDuration} step={0.1} value={repairEnd} onChange={event => setRepairEnd(Math.min(clipDuration, Math.max(repairStart + .1, Number(event.target.value) || repairStart + .1)))} /><span>s</span></div></div></div></div>}
           <div className="inspector-spacer" />
-            <button className="primary-action" type="button" onClick={handleGenerate} disabled={busy || upscaleWorking || audioWorking}>{busy || upscaleWorking || audioWorking ? t.generationQueued : showUpscale ? t.upscaleAction : showRepair ? t.repairRange : t.generate}<ArrowRight size={17} aria-hidden="true" /></button>
+            <button className="primary-action" type="button" onClick={handleGenerate} disabled={busy || upscaleWorking || inpaintWorking || characterWorking || audioWorking}>{busy || upscaleWorking || inpaintWorking || characterWorking || audioWorking ? t.generationQueued : showUpscale ? t.upscaleAction : showRepair ? t.repairRange : t.generate}<ArrowRight size={17} aria-hidden="true" /></button>
             {view === "audio" && activeMode === 1 && <p className="inspector-note">{effectiveModel === "elevenlabs/music/v2" ? t.musicElevenCost : t.musicStableCost}</p>}
+            {showInpaint && <p className="inspector-note">{t.inpaintCost}</p>}
+            {showCharacter && <p className="inspector-note">{t.characterCost}</p>}
         </aside>
       </div>
       {signedIn && <section className="media-library" aria-labelledby="media-library-title">
@@ -825,11 +900,17 @@ export default function WorkspaceApp() {
   const [imageChatModels, setImageChatModels] = useState<ChatModel[]>([{ id: "google/gemini-3.1-flash-image", name: "Gemini 3.1 Flash Image" }]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [projects, setProjects] = useState<ChatProject[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [projectBusy, setProjectBusy] = useState(false);
+  const [projectError, setProjectError] = useState("");
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [chatPending, setChatPending] = useState(false);
   const [chatError, setChatError] = useState("");
+  const [chatNeedsDecision, setChatNeedsDecision] = useState(false);
+  const [chatPreviousRequestId, setChatPreviousRequestId] = useState<string | null>(null);
   const [specialistId, setSpecialistId] = useState<"general" | "skin" | "mental" | "general-health" | "skin-and-hair" | "mental-wellbeing" | null>(null);
   const [mediaModels, setMediaModels] = useState<MediaModel[]>([]);
   const [mediaJobs, setMediaJobs] = useState<Partial<Record<MediaView, MediaJob>>>({});
@@ -837,15 +918,23 @@ export default function WorkspaceApp() {
   const [mediaSubmitting, setMediaSubmitting] = useState<Partial<Record<MediaView, boolean>>>({});
   const mediaSubmittingRef = useRef<Partial<Record<MediaView, boolean>>>({});
   const upscaleSubmissionRef = useRef<{ identity: string; key: string } | null>(null);
+  const inpaintSubmissionRef = useRef<{ identity: string; key: string } | null>(null);
+  const characterSubmissionRef = useRef<{ identity: string; key: string } | null>(null);
+  const inpaintMaskUploadRef = useRef<{ file: File; assetId: string } | null>(null);
   const musicSubmissionRef = useRef<{ identity: string; key: string } | null>(null);
   const firstLastSubmissionRef = useRef<{ identity: string; key: string } | null>(null);
   const lastFrameUploadRef = useRef<{ file: File; assetId: string } | null>(null);
   const repairSubmissionRef = useRef<{ identity: string; key: string } | null>(null);
+  const genericSubmissionRef = useRef<Partial<Record<MediaView, { identity: string; key: string }>>>({});
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const pendingRef = useRef(false);
+  const imageRequestRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
+  const textRequestRef = useRef<PendingChatTurn | null>(null);
   const authEpochRef = useRef(0);
+  const conversationLoadEpochRef = useRef(0);
+  const conversationLoadAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const savedLocale = readStorage("ailoom.locale");
@@ -864,7 +953,14 @@ export default function WorkspaceApp() {
     } catch { /* Ignore invalid local data. */ }
     const url = new URL(window.location.href);
     const directToken = url.pathname.match(/^\/invite\/([^/]+)\/?$/)?.[1];
-    setInviteToken(url.searchParams.get("invite") ?? url.searchParams.get("token") ?? directToken ?? null);
+    const queryToken = url.searchParams.get("invite") ?? url.searchParams.get("token");
+    setInviteToken(previous => queryToken ?? directToken ?? previous);
+    if (queryToken) {
+      url.searchParams.delete("invite");
+      url.searchParams.delete("token");
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+      setAuthOpen(true);
+    }
     setView(viewFromHash());
     setHydrated(true);
     const onHashChange = () => { setStudioMode(0); setView(viewFromHash()); };
@@ -1038,10 +1134,31 @@ export default function WorkspaceApp() {
     }
   }, []);
 
+  const refreshProjects = useCallback(async () => {
+    try {
+      const response = await fetch("/api/projects", { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) throw new Error(await responseError(response));
+      setProjects(projectsFromPayload(await response.json()));
+      setProjectError("");
+    } catch (error) {
+      setProjects([]);
+      setProjectError(error instanceof Error ? error.message : "Projects could not be loaded.");
+    }
+  }, []);
+
   useEffect(() => {
     if (user) void refreshConversations();
     else { setConversations([]); setSelectedConversationId(null); setMessages([]); }
   }, [user, refreshConversations]);
+  useEffect(() => {
+    if (user) void refreshProjects();
+    else { setProjects([]); setSelectedProjectId(null); setProjectError(""); }
+  }, [user, refreshProjects]);
+  useEffect(() => {
+    if (!user) { setChatPreviousRequestId(null); return; }
+    try { setChatPreviousRequestId(window.sessionStorage.getItem(`ailoom.chatTextPrevious.${user.id}`)); }
+    catch { setChatPreviousRequestId(null); }
+  }, [user]);
   useEffect(() => {
     if (!user) return;
     let active = true;
@@ -1060,10 +1177,8 @@ export default function WorkspaceApp() {
         if (!active || !Array.isArray(body?.jobs)) return;
         const latest: Partial<Record<MediaView, MediaJob>> = {};
         for (const item of body.jobs) {
-          const kind: unknown = item?.kind === "upscale" ? "image" : item?.kind === "edit"
-            ? item?.providerModel === "fal-ai/qwen-image-edit" ? "image" : item?.providerModel === "fal-ai/ltx-2.3-quality/inpaint" ? "video" : null
-            : item?.kind;
-          if ((kind !== "image" && kind !== "video" && kind !== "audio") || latest[kind]) continue;
+          const kind = mediaViewForJob(item?.kind, item?.providerModel);
+          if (!kind || latest[kind]) continue;
           const job = mediaJobFromPayload({ job: item });
           if (job) latest[kind] = job;
         }
@@ -1072,6 +1187,41 @@ export default function WorkspaceApp() {
       .catch(() => { /* A new job can still be submitted. */ });
     return () => { active = false; };
   }, [user]);
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    for (const target of mediaViews) {
+      const storageKey = `ailoom.mediaPending.${user.id}.${target}`;
+      let stored: { identity: string; key: string } | null = null;
+      try {
+        const raw = window.sessionStorage.getItem(storageKey);
+        const parsed = raw ? JSON.parse(raw) as { identity?: unknown } : null;
+        if (typeof parsed?.identity === "string") stored = parsePendingGeneration(raw, parsed.identity);
+      } catch { /* Browser storage can be unavailable. */ }
+      if (!stored) continue;
+      genericSubmissionRef.current[target] = stored;
+      void fetch(`/api/generations/${encodeURIComponent(stored.key)}`, { credentials: "same-origin", cache: "no-store" })
+        .then(async response => response.ok ? response.json() : null)
+        .then(body => {
+          if (!active) return;
+          const job = mediaJobFromPayload(body);
+          if (!job) return;
+          setMediaJobs(previous => ({ ...previous, [target]: job }));
+        }).catch(() => { /* A later retry can inspect the same request key. */ });
+    }
+    return () => { active = false; };
+  }, [user]);
+  useEffect(() => {
+    if (!user) return;
+    for (const target of mediaViews) {
+      const job = mediaJobs[target];
+      const pending = genericSubmissionRef.current[target];
+      if (!job || !pending || job.id !== pending.key || !["succeeded", "failed", "cancelled"].includes(job.state)) continue;
+      delete genericSubmissionRef.current[target];
+      try { window.sessionStorage.removeItem(`ailoom.mediaPending.${user.id}.${target}`); }
+      catch { /* In-memory state is already cleared. */ }
+    }
+  }, [user, mediaJobs]);
   useEffect(() => {
     if (!user) return;
     const activeJobs = (Object.entries(mediaJobs) as [MediaView, MediaJob][])
@@ -1093,29 +1243,128 @@ export default function WorkspaceApp() {
 
   const selectConversation = async (id: string) => {
     if (pendingRef.current) return;
+    conversationLoadAbortRef.current?.abort();
+    const controller = new AbortController();
+    conversationLoadAbortRef.current = controller;
+    const epoch = ++conversationLoadEpochRef.current;
     setSpecialistId(null);
     setSelectedConversationId(id);
     setMessagesLoading(true);
     setChatError("");
     try {
-      const response = await fetch(`/api/chat/conversations/${encodeURIComponent(id)}`, { credentials: "same-origin", cache: "no-store" });
+      const response = await fetch(`/api/chat/conversations/${encodeURIComponent(id)}`, { credentials: "same-origin", cache: "no-store", signal: controller.signal });
       if (!response.ok) throw new Error(await responseError(response));
-      setMessages(messagesFromPayload(await response.json()));
+      const body = await response.json();
+      if (epoch !== conversationLoadEpochRef.current || controller.signal.aborted) return;
+      setSelectedProjectId(typeof body?.conversation?.projectId === "string" ? body.conversation.projectId : null);
+      setMessages(messagesFromPayload(body));
     } catch (error) {
-      setChatError(error instanceof Error ? error.message : t.sendError);
+      if (epoch === conversationLoadEpochRef.current && !controller.signal.aborted) {
+        setChatError(error instanceof Error ? error.message : t.sendError);
+      }
     } finally {
-      setMessagesLoading(false);
+      if (epoch === conversationLoadEpochRef.current) {
+        setMessagesLoading(false);
+        conversationLoadAbortRef.current = null;
+      }
     }
   };
 
   const newConversation = () => {
     if (pendingRef.current) return;
+    conversationLoadEpochRef.current++;
+    conversationLoadAbortRef.current?.abort();
+    conversationLoadAbortRef.current = null;
+    setMessagesLoading(false);
     setChatMode("text");
     setSpecialistId(null);
     setSelectedConversationId(null);
     setMessages([]);
     setChatError("");
     promptRef.current?.focus();
+  };
+
+  const selectProject = (projectId: string | null) => {
+    if (pendingRef.current) return;
+    conversationLoadEpochRef.current++;
+    conversationLoadAbortRef.current?.abort();
+    conversationLoadAbortRef.current = null;
+    setMessagesLoading(false);
+    setSelectedProjectId(projectId);
+    setSelectedConversationId(null);
+    setMessages([]);
+    setChatError("");
+  };
+
+  const createChatProject = async (name: string, description: string | null): Promise<boolean> => {
+    if (projectBusy) return false;
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      const response = await fetch("/api/projects", { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, description }) });
+      if (!response.ok) throw new Error(await responseError(response));
+      const project = projectsFromPayload({ projects: [(await response.json()).project] })[0];
+      if (!project) throw new Error("Project could not be saved.");
+      setProjects(previous => [project, ...previous]);
+      selectProject(project.id);
+      return true;
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : "Project could not be saved.");
+      return false;
+    } finally { setProjectBusy(false); }
+  };
+
+  const updateChatProject = async (id: string, name: string, description: string | null): Promise<boolean> => {
+    if (projectBusy) return false;
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(id)}`, { method: "PATCH", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, description }) });
+      if (!response.ok) throw new Error(await responseError(response));
+      const project = projectsFromPayload({ projects: [(await response.json()).project] })[0];
+      if (!project) throw new Error("Project could not be saved.");
+      setProjects(previous => previous.map(item => item.id === id ? project : item));
+      return true;
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : "Project could not be saved.");
+      return false;
+    } finally { setProjectBusy(false); }
+  };
+
+  const deleteChatProject = async (id: string): Promise<boolean> => {
+    if (projectBusy) return false;
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE", credentials: "same-origin" });
+      if (!response.ok) throw new Error(await responseError(response));
+      setProjects(previous => previous.filter(item => item.id !== id));
+      setConversations(previous => previous.map(item => item.projectId === id ? { ...item, projectId: null } : item));
+      if (selectedProjectId === id) setSelectedProjectId(null);
+      return true;
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : "Project could not be deleted.");
+      return false;
+    } finally { setProjectBusy(false); }
+  };
+
+  const moveConversation = async (id: string, projectId: string | null) => {
+    if (projectBusy || pendingRef.current) return;
+    setProjectBusy(true);
+    setProjectError("");
+    try {
+      const response = await fetch(`/api/chat/conversations/${encodeURIComponent(id)}`, {
+        method: "PATCH", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId })
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      setConversations(previous => previous.map(item => item.id === id ? { ...item, projectId } : item));
+      setSelectedProjectId(projectId);
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : "Conversation could not be moved.");
+    } finally { setProjectBusy(false); }
   };
 
   const sendChatImage = async () => {
@@ -1132,6 +1381,7 @@ export default function WorkspaceApp() {
     const userId = `local-user-${crypto.randomUUID()}`;
     const assistantId = `local-assistant-${crypto.randomUUID()}`;
     const initialConversationId = selectedConversationId;
+    const initialProjectId = selectedProjectId;
     pendingRef.current = true;
     setChatPending(true);
     setChatError("");
@@ -1152,11 +1402,41 @@ export default function WorkspaceApp() {
         const savedId = assetId;
         setAttachment(current => current?.url === attachment.url ? { ...current, assetId: savedId } : current);
       }
-      const response = await fetch("/api/chat/images", {
-        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...(initialConversationId ? { conversationId: initialConversationId } : {}),
-          prompt, model: modelId, ...(assetId ? { referenceAssetIds: [assetId] } : {}) })
-      });
+      const imageInput = { ...(initialConversationId ? { conversationId: initialConversationId } : { projectId: initialProjectId }),
+        prompt, model: modelId, ...(assetId ? { referenceAssetIds: [assetId] } : {}) };
+      const fingerprint = JSON.stringify(imageInput);
+      const pendingKey = `ailoom.chatImagePending.${user.id}`;
+      let previous = imageRequestRef.current;
+      if (!previous) {
+        try {
+          const stored = JSON.parse(window.sessionStorage.getItem(pendingKey) ?? "null");
+          if (stored && typeof stored.fingerprint === "string" && typeof stored.requestId === "string" &&
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(stored.requestId)) previous = stored;
+        } catch { /* Invalid browser storage starts a fresh request. */ }
+      }
+      const requestId = previous?.fingerprint === fingerprint ? previous.requestId : crypto.randomUUID();
+      imageRequestRef.current = { fingerprint, requestId };
+      try { window.sessionStorage.setItem(pendingKey, JSON.stringify({ fingerprint, requestId })); }
+      catch { /* In-page retries still reuse the request ID. */ }
+      const statusUrl = `/api/chat/images?requestId=${encodeURIComponent(requestId)}`;
+      let response: Response;
+      try {
+        response = await fetch("/api/chat/images", {
+          method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...imageInput, requestId })
+        });
+      } catch {
+        // A network interruption may happen after the paid provider accepted the request.
+        // Inspect the same reservation before allowing a retry with this request ID.
+        response = await fetch(statusUrl, { credentials: "same-origin", cache: "no-store" });
+      }
+      for (let poll = 0; response.status === 202 && poll < 40; poll++) {
+        await new Promise(resolve => window.setTimeout(resolve, 3000));
+        response = await fetch(statusUrl, { credentials: "same-origin", cache: "no-store" });
+      }
+      if (response.status === 202) throw new Error(locale === "fa"
+        ? "درخواست هنوز در حال پردازش است. دوباره تلاش کن تا نتیجهٔ همان درخواست بررسی شود."
+        : "The request is still processing. Retry to check this same request.");
       if (!response.ok) throw new Error(await responseError(response));
       const body = await response.json();
       const conversationId = typeof body?.conversationId === "string" ? body.conversationId : null;
@@ -1177,6 +1457,8 @@ export default function WorkspaceApp() {
         : item.id === assistantId ? assistant : item));
       updateDraft("chat", "");
       setAttachment(null);
+      imageRequestRef.current = null;
+      try { window.sessionStorage.removeItem(pendingKey); } catch { /* Storage can be unavailable. */ }
       void refreshConversations();
     } catch (error) {
       setMessages(previous => previous.filter(item => item.id !== userId && item.id !== assistantId));
@@ -1202,6 +1484,7 @@ export default function WorkspaceApp() {
     const userId = `local-user-${crypto.randomUUID()}`;
     const assistantId = `local-assistant-${crypto.randomUUID()}`;
     const initialConversationId = selectedConversationId;
+    const initialProjectId = selectedProjectId;
     pendingRef.current = true;
     setChatPending(true);
     setChatError("");
@@ -1219,25 +1502,111 @@ export default function WorkspaceApp() {
         const completedAssetId = assetId;
         setAttachment(current => current?.url === attachment.url ? { ...current, assetId: completedAssetId } : current);
       }
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...(initialConversationId ? { conversationId: initialConversationId } : {}),
-          text: message,
-          model: chatModels.some(item => item.id === models.chat) ? models.chat : "openrouter/auto",
-          webSearch,
-          ...(assetId ? { attachmentIds: [assetId] } : {}),
-          ...(!initialConversationId && specialistId ? { specialistId } : {})
-        })
-      });
-      await readChatStream(response, event => {
-        if (event.type === "start" && event.conversationId) setSelectedConversationId(event.conversationId);
-        if (event.type === "delta") setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, text: item.text + event.text } : item));
-        if (event.type === "sources") setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, blocks: [...(item.blocks?.filter(block => block.type !== "sources") ?? []), { type: "sources", sources: event.sources }] } : item));
-        if (event.type === "done") setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, id: event.messageId || assistantId, status: undefined } : item));
-      });
+      const candidate: ChatTurnInput = {
+        ...(initialConversationId ? { conversationId: initialConversationId } : { projectId: initialProjectId }),
+        text: message, model: chatModels.some(item => item.id === models.chat) ? models.chat : "openrouter/auto",
+        webSearch, ...(assetId ? { attachmentIds: [assetId] } : {}),
+        ...(!initialConversationId && specialistId ? { specialistId } : {})
+      };
+      const pendingKey = `ailoom.chatTextPending.${user.id}`;
+      const savePending = (record: PendingChatTurn) => {
+        textRequestRef.current = record;
+        try { window.sessionStorage.setItem(pendingKey, JSON.stringify(record)); }
+        catch { /* In-page retries still reuse the request ID. */ }
+      };
+      const clearPending = () => {
+        textRequestRef.current = null;
+        try { window.sessionStorage.removeItem(pendingKey); }
+        catch { /* In-memory state is already cleared. */ }
+      };
+      const restoreConversation = async (conversationId: string, clearDraft: boolean) => {
+        const saved = await fetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}`, {
+          credentials: "same-origin", cache: "no-store"
+        });
+        if (!saved.ok) throw new Error(await responseError(saved));
+        const body = await saved.json();
+        setSelectedConversationId(conversationId);
+        setSelectedProjectId(typeof body?.conversation?.projectId === "string" ? body.conversation.projectId : null);
+        setMessages(messagesFromPayload(body));
+        if (clearDraft) { updateDraft("chat", ""); setAttachment(null); }
+        setSpecialistId(null);
+        clearPending();
+        void refreshConversations();
+      };
+      const inspectPending = async (record: PendingChatTurn, clearDraft: boolean): Promise<"missing" | "completed"> => {
+        for (let poll = 0; poll <= 8; poll++) {
+          const check = await fetch(`/api/chat?requestId=${encodeURIComponent(record.requestId)}`, {
+            credentials: "same-origin", cache: "no-store"
+          });
+          if (check.status === 404) return "missing";
+          if (!check.ok) throw new Error(await responseError(check));
+          const state = await check.json();
+          if (state?.status === "completed" && typeof state.conversationId === "string") {
+            await restoreConversation(state.conversationId, clearDraft);
+            return "completed";
+          }
+          if (state?.status === "uncertain" || state?.status === "failed") {
+            setChatNeedsDecision(true);
+            throw new Error(locale === "fa"
+              ? "وضعیت درخواست قبلی نامشخص یا ناموفق است؛ Ailoom آن را دوباره با هزینهٔ تازه اجرا نمی‌کند."
+              : "The previous request is uncertain or failed. Ailoom will not repeat the paid call automatically.");
+          }
+          if (state?.status !== "processing") throw new Error(t.sendError);
+          if (poll === 8) break;
+          await new Promise(resolve => window.setTimeout(resolve, 2000));
+        }
+        throw new Error(locale === "fa"
+          ? "پاسخ هنوز در حال پردازش است. دوباره تلاش کن تا همین درخواست بررسی شود."
+          : "The response is still processing. Retry to check this same request.");
+      };
+      let pending = textRequestRef.current;
+      if (!pending) {
+        try { pending = parsePendingChatTurn(window.sessionStorage.getItem(pendingKey)); }
+        catch { /* Browser storage can be unavailable. */ }
+      }
+      if (pending) {
+        const sameTurn = samePendingTurn(pending, candidate, initialConversationId, initialProjectId);
+        const result = await inspectPending(pending, sameTurn);
+        if (result === "completed") return;
+        if (!sameTurn) clearPending();
+      }
+      if (!pending || !samePendingTurn(pending, candidate, initialConversationId, initialProjectId)) {
+        pending = { input: candidate, requestId: crypto.randomUUID() };
+      }
+      savePending(pending);
+      let response: Response;
+      try {
+        response = await fetch("/api/chat", {
+          method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...pending.input, requestId: pending.requestId })
+        });
+      } catch (error) {
+        const result = await inspectPending(pending, true);
+        if (result === "completed") return;
+        throw error;
+      }
+      if (!response.headers.get("Content-Type")?.includes("text/event-stream")) {
+        const result = await inspectPending(pending, true);
+        if (result === "completed") return;
+        throw new Error(response.ok ? t.sendError : await responseError(response));
+      }
+      try {
+        await readChatStream(response, event => {
+          if (event.type === "start" && event.conversationId) {
+            setSelectedConversationId(event.conversationId);
+            savePending({ ...pending, resultConversationId: event.conversationId });
+          }
+          if (event.type === "delta") setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, text: item.text + event.text } : item));
+          if (event.type === "sources") setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, blocks: [...(item.blocks?.filter(block => block.type !== "sources") ?? []), { type: "sources", sources: event.sources }] } : item));
+          if (event.type === "done") setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, id: event.messageId || assistantId, status: undefined } : item));
+        });
+      } catch (error) {
+        const result = await inspectPending(textRequestRef.current ?? pending, true);
+        if (result === "completed") return;
+        throw error;
+      }
+      clearPending();
+      setChatNeedsDecision(false);
       updateDraft("chat", "");
       if (assetId) setMessages(previous => previous.map(item => item.id === userId ? { ...item, blocks: [{ type: attachment?.mime === "application/pdf" ? "file" : "image", assetId, alt: attachment?.name }] } : item));
       setAttachment(null);
@@ -1252,12 +1621,47 @@ export default function WorkspaceApp() {
     }
   };
 
+  const startSeparateTextRequest = () => {
+    if (!user || pendingRef.current) return;
+    let pending = textRequestRef.current;
+    if (!pending) {
+      try { pending = parsePendingChatTurn(window.sessionStorage.getItem(`ailoom.chatTextPending.${user.id}`)); }
+      catch { /* Browser storage can be unavailable. */ }
+    }
+    if (pending) {
+      setChatPreviousRequestId(pending.requestId);
+      try {
+        window.sessionStorage.setItem(`ailoom.chatTextPrevious.${user.id}`, pending.requestId);
+        window.sessionStorage.removeItem(`ailoom.chatTextPending.${user.id}`);
+      } catch { /* The server still retains the owner-scoped request status. */ }
+    }
+    textRequestRef.current = null;
+    setChatNeedsDecision(false);
+    setChatError("");
+    promptRef.current?.focus();
+  };
+
   const changeChatMode = (mode: "text" | "image") => {
     setChatMode(mode);
     if (mode === "image" && attachment?.mime === "application/pdf") setAttachment(null);
   };
 
   const clearPrivateWorkspace = () => {
+    conversationLoadEpochRef.current++;
+    conversationLoadAbortRef.current?.abort();
+    conversationLoadAbortRef.current = null;
+    if (user) {
+      try { window.sessionStorage.removeItem(`ailoom.chatImagePending.${user.id}`); }
+      catch { /* Private browsing can disable storage. */ }
+      try { window.sessionStorage.removeItem(`ailoom.chatTextPending.${user.id}`); }
+      catch { /* Private browsing can disable storage. */ }
+      try { window.sessionStorage.removeItem(`ailoom.chatTextPrevious.${user.id}`); }
+      catch { /* Private browsing can disable storage. */ }
+      for (const target of mediaViews) {
+        try { window.sessionStorage.removeItem(`ailoom.mediaPending.${user.id}.${target}`); }
+        catch { /* Private browsing can disable storage. */ }
+      }
+    }
     setDrafts(emptyDrafts());
     setDraftsUserId(null);
     setAttachment(null);
@@ -1267,17 +1671,29 @@ export default function WorkspaceApp() {
     setMediaSubmitting({});
     mediaSubmittingRef.current = {};
     upscaleSubmissionRef.current = null;
+    inpaintSubmissionRef.current = null;
+    characterSubmissionRef.current = null;
+    inpaintMaskUploadRef.current = null;
     musicSubmissionRef.current = null;
     firstLastSubmissionRef.current = null;
     lastFrameUploadRef.current = null;
     repairSubmissionRef.current = null;
+    genericSubmissionRef.current = {};
     setConversations([]);
+    setProjects([]);
+    setSelectedProjectId(null);
+    setProjectBusy(false);
+    setProjectError("");
+    imageRequestRef.current = null;
+    textRequestRef.current = null;
     setHistoryLoading(false);
     setSelectedConversationId(null);
     setMessages([]);
     setMessagesLoading(false);
     setChatPending(false);
     setChatError("");
+    setChatNeedsDecision(false);
+    setChatPreviousRequestId(null);
     setSpecialistId(null);
     setChatMode("text");
     setWebSearch(false);
@@ -1353,21 +1769,25 @@ export default function WorkspaceApp() {
   const startGeneration = async (target: MediaView, options: StudioRequestOptions) => {
     const imageEdit = target === "image" && options.modeIndex === 1;
     const imageUpscale = target === "image" && options.modeIndex === 2;
+    const imageInpaint = target === "image" && options.modeIndex === 3;
+    const imageCharacter = target === "image" && options.modeIndex === 4;
     const referenceVideo = target === "video" && options.modeIndex === 1;
     const videoRepair = target === "video" && options.modeIndex === 2;
     const firstLastVideo = target === "video" && options.modeIndex === 3;
     const musicGeneration = target === "audio" && options.modeIndex === 1;
     const textGeneration = options.modeIndex === 0 || musicGeneration;
     if (imageUpscale && mediaJobs.image && ["queued", "submitting", "running"].includes(mediaJobs.image.state)) return;
+    if (imageInpaint && mediaJobs.image && ["queued", "submitting", "running"].includes(mediaJobs.image.state)) return;
+    if (imageCharacter && mediaJobs.image && ["queued", "submitting", "running"].includes(mediaJobs.image.state)) return;
     if (target === "audio" && mediaJobs.audio && ["queued", "submitting", "running"].includes(mediaJobs.audio.state)) return;
-    if ((!imageEdit && !imageUpscale && !referenceVideo && !videoRepair && !firstLastVideo && !textGeneration) || (textGeneration && preview) || ((imageEdit || imageUpscale || referenceVideo || videoRepair || firstLastVideo) && !preview) || (firstLastVideo && !options.lastFrame)) {
+    if ((!imageEdit && !imageUpscale && !imageInpaint && !imageCharacter && !referenceVideo && !videoRepair && !firstLastVideo && !textGeneration) || (textGeneration && preview) || ((imageEdit || imageUpscale || imageInpaint || imageCharacter || referenceVideo || videoRepair || firstLastVideo) && !preview) || (firstLastVideo && !options.lastFrame) || (imageInpaint && !options.maskFile)) {
       setMediaErrors(previous => ({ ...previous, [target]: t.unsupportedOperation }));
       return;
     }
     if (!user) { openLogin(drafts[target], target); return; }
     const prompt = drafts[target].trim();
     if (!prompt && !imageUpscale) return;
-    const operation = imageUpscale ? "image_upscale" : imageEdit ? "image_edit" : referenceVideo ? options.modelId === "fal-ai/veo3.1/fast/image-to-video" ? "image_to_video" : "reference_to_video" : videoRepair ? "temporal_inpaint" : firstLastVideo ? "first_last_frame_to_video" : target === "image" ? "text_to_image" : target === "video" ? "text_to_video" : musicGeneration ? "text_to_music" : "text_to_speech";
+    const operation = imageUpscale ? "image_upscale" : imageInpaint ? "image_inpaint" : imageCharacter ? "character_to_image" : imageEdit ? "image_edit" : referenceVideo ? options.modelId === "fal-ai/veo3.1/fast/image-to-video" ? "image_to_video" : "reference_to_video" : videoRepair ? "temporal_inpaint" : firstLastVideo ? "first_last_frame_to_video" : target === "image" ? "text_to_image" : target === "video" ? "text_to_video" : musicGeneration ? "text_to_music" : "text_to_speech";
     const supported = mediaModels.length ? mediaModels.some(item => item.id === options.modelId && item.operations.includes(operation))
       : modelOptions[target].some(item => item.id === options.modelId);
     if (!supported && !videoRepair) {
@@ -1375,7 +1795,7 @@ export default function WorkspaceApp() {
       return;
     }
     let payload: Record<string, unknown>;
-    if (imageEdit || imageUpscale || referenceVideo || videoRepair || firstLastVideo) {
+    if (imageEdit || imageUpscale || imageInpaint || imageCharacter || referenceVideo || videoRepair || firstLastVideo) {
       payload = {};
     } else if (target === "image") {
       payload = { modelId: options.modelId, operation: "text_to_image", prompt };
@@ -1421,13 +1841,20 @@ export default function WorkspaceApp() {
     setMediaErrors(previous => ({ ...previous, [target]: "" }));
     try {
       let endpoint = "/api/generations";
+      const sourceAssetIds: string[] = [];
       let upscaleKey: string | null = null;
+      let inpaintKey: string | null = null;
+      let characterKey: string | null = null;
       let musicKey: string | null = null;
       let firstLastKey: string | null = null;
       let repairKey: string | null = null;
-      if (imageEdit || imageUpscale || referenceVideo || videoRepair || firstLastVideo) {
+      if (imageEdit || imageUpscale || imageInpaint || imageCharacter || referenceVideo || videoRepair || firstLastVideo) {
         const source = preview?.file;
         if (!source) throw new Error(t.unsupportedOperation);
+        if (imageInpaint && (!["image/png", "image/jpeg"].includes(source.type) || source.size === 0 || source.size > 8_000_000 ||
+          !options.maskFile || options.maskFile.type !== "image/png" || options.maskFile.size === 0 || options.maskFile.size > 8_000_000)) throw new Error(t.inpaintInvalid);
+        if (imageCharacter && (!["image/png", "image/jpeg", "image/webp"].includes(source.type) ||
+          source.size === 0 || source.size > 10_000_000)) throw new Error(t.characterInvalid);
         if ((imageEdit || imageUpscale || referenceVideo || firstLastVideo) && !["image/png", "image/jpeg", "image/webp"].includes(source.type)) throw new Error(imageUpscale ? t.upscaleUnsupportedFile : t.unsupportedOperation);
         if (firstLastVideo && (source.size === 0 || source.size > 8_000_000 || !options.lastFrame ||
           options.lastFrame.size === 0 || options.lastFrame.size > 8_000_000 ||
@@ -1445,7 +1872,38 @@ export default function WorkspaceApp() {
           const savedId = sourceAssetId;
           setPreview(current => current?.url === preview?.url ? { ...current, assetId: savedId } : current);
         }
-        if (imageEdit || imageUpscale || referenceVideo || firstLastVideo) {
+        sourceAssetIds.push(sourceAssetId);
+        if (imageCharacter) {
+          const sizes: Record<string, string> = { "16:9": "landscape_16_9", "9:16": "portrait_16_9",
+            "4:3": "landscape_4_3", "1:1": "square_hd" };
+          const imageSize = sizes[options.aspect] ?? "landscape_16_9";
+          const renderingSpeed = options.quality === "high" ? "QUALITY" : "BALANCED";
+          endpoint = "/api/image/character";
+          payload = { sourceAssetId, prompt, imageSize, renderingSpeed };
+          const identity = JSON.stringify([sourceAssetId, prompt, imageSize, renderingSpeed]);
+          const previous = characterSubmissionRef.current;
+          characterKey = previous?.identity === identity ? previous.key : crypto.randomUUID();
+          characterSubmissionRef.current = { identity, key: characterKey };
+        } else if (imageInpaint) {
+          const previousMask = inpaintMaskUploadRef.current;
+          let maskAssetId = previousMask && previousMask.file === options.maskFile ? previousMask.assetId : null;
+          if (!maskAssetId) {
+            const maskData = new FormData();
+            maskData.append("file", options.maskFile!);
+            const maskUpload = await fetch("/api/assets", { method: "POST", credentials: "same-origin", body: maskData });
+            if (!maskUpload.ok) throw new Error(await responseError(maskUpload));
+            const maskBody = await maskUpload.json();
+            maskAssetId = typeof maskBody?.asset?.id === "string" ? maskBody.asset.id : null;
+            if (!maskAssetId) throw new Error(t.attachmentUnavailable);
+            inpaintMaskUploadRef.current = { file: options.maskFile!, assetId: maskAssetId };
+          }
+          endpoint = "/api/image/inpaint";
+          payload = { sourceAssetId, maskAssetId, prompt };
+          const identity = JSON.stringify([sourceAssetId, maskAssetId, prompt]);
+          const previous = inpaintSubmissionRef.current;
+          inpaintKey = previous?.identity === identity ? previous.key : crypto.randomUUID();
+          inpaintSubmissionRef.current = { identity, key: inpaintKey };
+        } else if (imageEdit || imageUpscale || referenceVideo || firstLastVideo) {
           const access = await fetch(`/api/assets/${encodeURIComponent(sourceAssetId)}`, { method: "POST", credentials: "same-origin" });
           if (!access.ok) throw new Error(await responseError(access));
           const signed = await access.json();
@@ -1473,6 +1931,7 @@ export default function WorkspaceApp() {
               if (!lastAssetId) throw new Error(t.attachmentUnavailable);
               lastFrameUploadRef.current = { file: options.lastFrame!, assetId: lastAssetId };
             }
+            sourceAssetIds.push(lastAssetId);
             const lastAccess = await fetch(`/api/assets/${encodeURIComponent(lastAssetId)}`, { method: "POST", credentials: "same-origin" });
             if (!lastAccess.ok) throw new Error(await responseError(lastAccess));
             const lastSigned = await lastAccess.json();
@@ -1514,20 +1973,56 @@ export default function WorkspaceApp() {
         musicKey = previous?.identity === identity ? previous.key : crypto.randomUUID();
         musicSubmissionRef.current = { identity, key: musicKey };
       }
-      const response = await fetch(endpoint, {
-        method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/json", ...((upscaleKey || musicKey || firstLastKey || repairKey) ? { "Idempotency-Key": (upscaleKey || musicKey || firstLastKey || repairKey)! } : {}) },
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) throw new Error(await responseError(response));
+      let genericKey: string | null = null;
+      if (endpoint === "/api/generations") {
+        const identity = generationRequestIdentity(endpoint, payload, sourceAssetIds);
+        const storageKey = `ailoom.mediaPending.${user.id}.${target}`;
+        let previous = genericSubmissionRef.current[target];
+        if (previous?.identity !== identity) {
+          try { previous = parsePendingGeneration(window.sessionStorage.getItem(storageKey), identity) ?? undefined; }
+          catch { previous = undefined; }
+        }
+        genericKey = previous?.key ?? crypto.randomUUID();
+        genericSubmissionRef.current[target] = { identity, key: genericKey };
+        try { window.sessionStorage.setItem(storageKey, JSON.stringify({ identity, key: genericKey })); }
+        catch { /* In-page retries still reuse the request key. */ }
+      }
+      const requestKey = genericKey || upscaleKey || inpaintKey || characterKey || musicKey || firstLastKey || repairKey;
+      let response: Response;
+      try {
+        response = await fetch(endpoint, {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json", ...(requestKey ? { "Idempotency-Key": requestKey } : {}) },
+          body: JSON.stringify(payload)
+        });
+      } catch (error) {
+        if (!genericKey) throw error;
+        const check = await fetch(`/api/generations/${encodeURIComponent(genericKey)}`, { credentials: "same-origin", cache: "no-store" });
+        if (!check.ok) throw error;
+        response = check;
+      }
+      if (response.status >= 500 && genericKey) {
+        const check = await fetch(`/api/generations/${encodeURIComponent(genericKey)}`, { credentials: "same-origin", cache: "no-store" }).catch(() => null);
+        if (check?.ok) response = check;
+      }
+      if (!response.ok) {
+        if (genericKey && response.status < 500) {
+          delete genericSubmissionRef.current[target];
+          try { window.sessionStorage.removeItem(`ailoom.mediaPending.${user.id}.${target}`); }
+          catch { /* In-memory state is already cleared. */ }
+        }
+        throw new Error(await responseError(response));
+      }
       const job = mediaJobFromPayload(await response.json());
       if (!job) throw new Error(t.generationNotReady);
       setMediaJobs(previous => ({ ...previous, [target]: job }));
       if (imageUpscale) upscaleSubmissionRef.current = null;
+      if (imageInpaint) { inpaintSubmissionRef.current = null; inpaintMaskUploadRef.current = null; }
+      if (imageCharacter) characterSubmissionRef.current = null;
       if (musicGeneration) musicSubmissionRef.current = null;
       if (firstLastVideo) { firstLastSubmissionRef.current = null; lastFrameUploadRef.current = null; }
       if (videoRepair) repairSubmissionRef.current = null;
-      if (imageEdit || imageUpscale || referenceVideo || videoRepair || firstLastVideo) setPreview(null);
+      if (imageEdit || imageUpscale || imageInpaint || referenceVideo || videoRepair || firstLastVideo) setPreview(null);
     } catch (error) {
       setMediaErrors(previous => ({ ...previous, [target]: error instanceof Error ? error.message : t.generationFailed }));
     } finally {
@@ -1541,7 +2036,7 @@ export default function WorkspaceApp() {
       <Header locale={locale} theme={theme} view={view} user={user} onLocale={setLocale} onTheme={() => setTheme(current => current === "light" ? "dark" : "light")} onNavigate={navigate} onLogin={() => openLogin()} onSignOut={() => void signOut()} />
       <main id="main-content">
         {view === "chat" && (user
-          ? <ChatWorkspace locale={locale} user={user} conversations={conversations} historyLoading={historyLoading} selectedId={selectedConversationId} messages={messages} messageLoading={messagesLoading} pending={chatPending} error={chatError} prompt={drafts.chat} onPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} onModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSend={() => void sendChat()} onSelect={id => void selectConversation(id)} onNew={newConversation} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />
+          ? <ChatWorkspace locale={locale} user={user} conversations={conversations} historyLoading={historyLoading} selectedId={selectedConversationId} projects={projects} selectedProjectId={selectedProjectId} projectBusy={projectBusy} projectError={projectError} onSelectProject={selectProject} onCreateProject={createChatProject} onUpdateProject={updateChatProject} onDeleteProject={deleteChatProject} onMoveConversation={moveConversation} messages={messages} messageLoading={messagesLoading} pending={chatPending} error={chatError} showSeparateRequest={chatNeedsDecision} previousRequestId={chatPreviousRequestId} onSeparateRequest={startSeparateTextRequest} prompt={drafts.chat} onPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} onModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSend={() => void sendChat()} onSelect={id => void selectConversation(id)} onNew={newConversation} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />
           : <ChatLanding locale={locale} prompt={drafts.chat} setPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} setModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSubmit={() => void sendChat()} onNavigate={navigate} onStarter={useWorkflow} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />)}
         {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} onLastFrameChange={() => { lastFrameUploadRef.current = null; firstLastSubmissionRef.current = null; }} availableModels={mediaModels.filter(item => item.outputKind === view && (view !== "video" || ["fal-ai/veo3.1/fast", "fal-ai/veo3.1/fast/image-to-video", "fal-ai/veo3.1/fast/first-last-frame-to-video", "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/reference-to-video", "fal-ai/ltx-2.3-quality/inpaint"].includes(item.id)))} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} onLogin={() => openLogin("", view)} />}
         {view === "explore" && <ConnectedExplorePage locale={locale} user={user} onUse={useWorkflow} onLogin={() => openLogin()} />}

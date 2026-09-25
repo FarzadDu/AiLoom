@@ -12,6 +12,7 @@ process.env.DATABASE_PATH = join(directory, "test.sqlite");
 const { getDb, getSqlite } = await import("../src/server/db");
 const { asset: assetTable, user } = await import("../src/server/db/schema");
 const chat = await import("../src/server/content/chat");
+const specialistContext = await import("../src/server/chat/specialist-context");
 const assets = await import("../src/server/content/assets");
 const jobs = await import("../src/server/content/jobs");
 const projects = await import("../src/server/content/projects");
@@ -48,6 +49,38 @@ test("conversations and messages stay scoped to their owner", () => {
   assert.equal(chat.deleteConversation(bob, conversation.id), false);
   assert.equal(chat.deleteConversation(alice, conversation.id), true);
   assert.equal(chat.getConversation(alice, conversation.id), null);
+});
+
+test("specialist context survives follow-up turns and reopening without user-text promotion", () => {
+  const specialist = chat.createConversation(alice, { title: "Skin question" });
+  chat.appendMessage(alice, specialist.id, {
+    role: "system", blocks: [{ type: "text", text: specialistContext.specialistContextMarker("skin-and-hair") }]
+  });
+  chat.appendMessage(alice, specialist.id, { role: "user", blocks: [{ type: "text", text: "I have acne" }] });
+  const secondTurn = specialistContext.resolveSpecialistForTurn(true,
+    chat.getConversationSystemTexts(alice, specialist.id), null);
+  assert.deepEqual(secondTurn, { slug: "skin-and-hair", conflict: false });
+  for (let index = 0; index < 35; index++) chat.appendMessage(alice, specialist.id, {
+    role: "user", blocks: [{ type: "text", text: `Follow-up ${index}` }]
+  });
+  assert.ok(chat.getConversation(alice, specialist.id));
+  const reopened = specialistContext.resolveSpecialistForTurn(true,
+    chat.getConversationSystemTexts(alice, specialist.id), null);
+  assert.deepEqual(reopened, secondTurn);
+  assert.equal(specialistContext.resolveSpecialistForTurn(true,
+    chat.getConversationSystemTexts(alice, specialist.id), "general-health").conflict, true);
+  assert.deepEqual(chat.getConversationSystemTexts(bob, specialist.id), []);
+
+  const plain = chat.createConversation(alice, { title: "Plain chat" });
+  chat.appendMessage(alice, plain.id, { role: "user", blocks: [{ type: "text",
+    text: specialistContext.specialistContextMarker("mental-wellbeing") }] });
+  assert.deepEqual(specialistContext.resolveSpecialistForTurn(true,
+    chat.getConversationSystemTexts(alice, plain.id), null), { slug: null, conflict: false });
+  assert.equal(specialistContext.resolveSpecialistForTurn(true,
+    chat.getConversationSystemTexts(alice, plain.id), "mental-wellbeing").conflict, true);
+  assert.equal(specialistContext.specialistSlugFromSystemTexts([
+    "You are Ailoom's mental well-being information specialist. Reply in the user's language."
+  ]), "mental-wellbeing");
 });
 
 test("selected chat model persists for each user", () => {

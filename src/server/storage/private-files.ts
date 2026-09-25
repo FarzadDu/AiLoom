@@ -13,6 +13,7 @@ const formats = {
   "video/webm": { kind: "video", extension: "webm", match: (bytes: Buffer) => bytes.subarray(0, 4).equals(Buffer.from([26, 69, 223, 163])) },
   "audio/mpeg": { kind: "audio", extension: "mp3", match: (bytes: Buffer) => bytes.toString("ascii", 0, 3) === "ID3" || bytes.length > 1 && bytes[0] === 255 && (bytes[1] & 224) === 224 },
   "audio/wav": { kind: "audio", extension: "wav", match: (bytes: Buffer) => bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WAVE" },
+  "audio/flac": { kind: "audio", extension: "flac", match: (bytes: Buffer) => bytes.toString("ascii", 0, 4) === "fLaC" },
   "audio/ogg": { kind: "audio", extension: "ogg", match: (bytes: Buffer) => bytes.toString("ascii", 0, 4) === "OggS" },
   "application/pdf": { kind: "file", extension: "pdf", match: (bytes: Buffer) => bytes.toString("ascii", 0, 5) === "%PDF-" }
 } as const;
