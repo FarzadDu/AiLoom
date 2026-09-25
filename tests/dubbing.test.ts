@@ -80,7 +80,7 @@ test("dubbing request is owner-scoped, posted once, polled, and imported private
     const sourceFile = await savePrivateFile(Buffer.from("RIFF0000WAVEfmt "), "audio/wav");
     const source = createAsset(owner.ownerId, { ...sourceFile, source: "upload", originalName: "recording.wav" });
     const id = randomUUID();
-    const post = (cookie: string, key = id, targetLanguage = "fa", sourceAssetId = source.id) =>
+    const post = (cookie: string, key: string = id, targetLanguage = "fa", sourceAssetId = source.id) =>
       dubRoute.POST(new Request("http://localhost:3000/api/audio/dubbing", { method: "POST",
         headers: { cookie, origin: "http://localhost:3000", "content-type": "application/json",
           "Idempotency-Key": key },
@@ -88,7 +88,10 @@ test("dubbing request is owner-scoped, posted once, polled, and imported private
     assert.equal((await dubRoute.POST(new Request("http://localhost:3000/api/audio/dubbing",
       { method: "POST" }))).status, 401);
     assert.equal((await post(other.cookie)).status, 404);
-    assert.equal((await post(owner.cookie)).status, 202);
+    assert.equal((await post(owner.cookie, id.toUpperCase())).status, 202);
+    getDb().update(dubbingJob).set({ id: id.toUpperCase() })
+      .where(eq(dubbingJob.id, id)).run();
+    assert.equal(getOwnedDubbingJob(owner.ownerId, id)?.id, id.toUpperCase());
     assert.equal((await post(owner.cookie)).status, 200);
     assert.equal((await post(owner.cookie, id, "es")).status, 409);
     assert.equal((await dubDetailRoute.GET(new Request(`http://localhost:3000/api/audio/dubbing/${id}`,
@@ -108,7 +111,7 @@ test("dubbing request is owner-scoped, posted once, polled, and imported private
     assert.equal(getOwnedDubbingJob(owner.ownerId, id)?.state, "running");
     assert.equal((await post(owner.cookie)).status, 200);
     getDb().update(dubbingJob).set({ nextPollAt: new Date(Date.now() - 1000) })
-      .where(eq(dubbingJob.id, id)).run();
+      .where(eq(dubbingJob.id, id.toUpperCase())).run();
     let imports = 0;
     await runDubbingWorkerCycle({ getProject: async () => ({ status: "ready", languageIds: ["lang_test"] }),
       getLanguage: async () => ({ status: "completed",

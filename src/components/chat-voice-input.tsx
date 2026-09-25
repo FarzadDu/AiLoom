@@ -75,10 +75,13 @@ export function ChatVoiceInput({ locale, disabled, onTranscript }: {
     setState("transcribing");
     const controller = new AbortController();
     requestRef.current = controller;
+    let mayHaveReachedProvider = false;
+    let confirmedFailure = false;
     try {
       const form = new FormData();
       const extension = mime === "audio/mp4" ? "m4a" : mime === "audio/ogg" ? "ogg" : "webm";
       form.set("file", new File([blob], `voice-note.${extension}`, { type: mime }));
+      mayHaveReachedProvider = true;
       const response = await fetch("/api/audio/transcribe", {
         method: "POST", credentials: "same-origin", body: form, signal: controller.signal,
         headers: { "Idempotency-Key": crypto.randomUUID() }
@@ -89,6 +92,8 @@ export function ChatVoiceInput({ locale, disabled, onTranscript }: {
           if (mountedRef.current) setNotice(t.uncertain);
           return;
         }
+        confirmedFailure = failure?.status === "failed" ||
+          response.status >= 400 && response.status < 500 && response.status !== 408;
         throw new Error("Transcription unavailable");
       }
       const payload = await response.json() as { text?: unknown };
@@ -97,7 +102,8 @@ export function ChatVoiceInput({ locale, disabled, onTranscript }: {
       transcriptRef.current(payload.text.trim());
       setNotice(t.added);
     } catch {
-      if (!controller.signal.aborted && mountedRef.current) setNotice(t.failed);
+      if (!controller.signal.aborted && mountedRef.current)
+        setNotice(mayHaveReachedProvider && !confirmedFailure ? t.uncertain : t.failed);
     } finally {
       if (mountedRef.current) setState("idle");
       if (requestRef.current === controller) requestRef.current = null;

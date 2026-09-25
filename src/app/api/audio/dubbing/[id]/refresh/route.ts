@@ -23,12 +23,12 @@ export async function POST(request: Request, context: Context) {
     return Response.json({ error: "ElevenLabs is not configured." }, { status: 503 });
   }
   try {
-    const projectId = await findDubbingProjectByReference({ requestId: id });
+    const projectId = await findDubbingProjectByReference({ requestId: job.id });
     if (!projectId) return Response.json({ job: publicDubbingJob(current.id, job), found: false },
       { headers: responseHeaders });
     const project = await getDubbingProject({ projectId });
     if (project.status === "failed") {
-      const updated = reconcileUncertainDubbingJob(current.id, id, { state: "failed", projectId });
+      const updated = reconcileUncertainDubbingJob(current.id, job.id, { state: "failed", projectId });
       return Response.json({ job: publicDubbingJob(current.id, updated!), found: true },
         { headers: responseHeaders });
     }
@@ -37,7 +37,7 @@ export async function POST(request: Request, context: Context) {
         error: "Provider project found, but the original language target could not be identified safely." },
       { status: 409, headers: responseHeaders });
     }
-    const updated = reconcileUncertainDubbingJob(current.id, id, {
+    const updated = reconcileUncertainDubbingJob(current.id, job.id, {
       state: "running", projectId, languageId: project.languageIds[0]
     });
     return Response.json({ job: publicDubbingJob(current.id, updated!), found: true },

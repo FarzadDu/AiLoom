@@ -34,7 +34,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const status = await getInstantVoiceVerification({
       voiceId: providerVoiceId, signal: AbortSignal.timeout(15_000)
     });
-    const updated = reconcileVoiceClone(current.id, id, providerVoiceId,
+    const updated = reconcileVoiceClone(current.id, voice.id, providerVoiceId,
       status === "unknown" ? "uncertain" : status);
     if (!updated) return Response.json({ error: "Voice not found." }, { status: 404 });
     return Response.json({ voice: publicVoiceClone(updated), matched: true }, { headers: responseHeaders });

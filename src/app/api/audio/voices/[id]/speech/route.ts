@@ -18,10 +18,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
   const { id } = await context.params;
   if (!z.uuid().safeParse(id).success) return Response.json({ error: "Invalid voice ID." }, { status: 400 });
-  const requestId = request.headers.get("Idempotency-Key");
-  if (!requestId || !z.uuid().safeParse(requestId).success) {
+  const rawRequestId = request.headers.get("Idempotency-Key");
+  if (!rawRequestId || !z.uuid().safeParse(rawRequestId).success) {
     return Response.json({ error: "A valid request key is required." }, { status: 400 });
   }
+  const requestId = rawRequestId.toLowerCase();
   const parsed = await parseBoundedJson(request, requestSchema, 12_000, "Invalid speech request.");
   if (!parsed.success) return parsed.response;
   const clone = getOwnedVoiceClone(current.id, id);
@@ -34,8 +35,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
   let reserved;
   try {
-    reserved = reserveVoiceSpeech({ ownerId: current.id, requestId, cloneId: id,
-      inputHash: speechDigest(id, parsed.data.text) });
+    reserved = reserveVoiceSpeech({ ownerId: current.id, requestId, cloneId: clone.id,
+      inputHash: speechDigest(clone.id, parsed.data.text) });
   } catch (error) {
     if (error instanceof VoiceRequestConflictError) {
       return Response.json({ error: error.message }, { status: 409 });

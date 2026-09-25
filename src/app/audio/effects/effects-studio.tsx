@@ -40,7 +40,7 @@ const presets = [
 
 const copy = {
   en: {
-    back: "Back to Ailoom", eyebrow: "AUDIO / SOUND EFFECTS", title: "Make the moment sound real.",
+    back: "Back to Ailoom", eyebrow: "AUDIO / SOUND EFFECTS", formEyebrow: "01 / CREATE", libraryEyebrow: "02 / LIBRARY", seconds: "s", title: "Make the moment sound real.",
     subtitle: "Describe a scene, movement, impact, or atmosphere. Choose a model and create a private sound effect.",
     signIn: "Sign in on the home page to create and hear your private sound effects.", signedIn: "Signed in as",
     formTitle: "Create a sound", prompt: "Describe the sound", placeholder: "A heavy wooden door creaks open in an empty hall…",
@@ -60,7 +60,7 @@ const copy = {
     english: "English", persian: "فارسی", light: "Light", dark: "Dark"
   },
   fa: {
-    back: "بازگشت به Ailoom", eyebrow: "صدا / افکت صوتی", title: "به لحظه جان بده.",
+    back: "بازگشت به Ailoom", eyebrow: "صدا / افکت صوتی", formEyebrow: "۰۱ / ساخت", libraryEyebrow: "۰۲ / کتابخانه", seconds: "ثانیه", title: "به لحظه جان بده.",
     subtitle: "صحنه، حرکت، ضربه یا فضا را توصیف کن. مدل را انتخاب کن و افکت صوتی خصوصی بساز.",
     signIn: "برای ساختن و شنیدن افکت‌های خصوصی‌ات در صفحهٔ اصلی وارد شو.", signedIn: "واردشده با نام",
     formTitle: "ساخت صدا", prompt: "صدا را توصیف کن", placeholder: "در چوبی سنگین در تالاری خالی با صدای جیرجیر باز می‌شود…",
@@ -142,10 +142,17 @@ export default function EffectsStudio({ signedIn, name, userId }: {
   }, [effects, pendingStorageKey]);
 
   useEffect(() => {
+    let initialLocale: Locale = "en";
+    let initialTheme: Theme = "light";
     try {
-      setLocale(localStorage.getItem("ailoom.locale") === "fa" ? "fa" : "en");
-      setTheme(localStorage.getItem("ailoom.theme") === "dark" ? "dark" : "light");
+      initialLocale = localStorage.getItem("ailoom.locale") === "fa" ? "fa" : "en";
+      initialTheme = localStorage.getItem("ailoom.theme") === "dark" ? "dark" : "light";
     } catch { /* Browser storage may be unavailable. */ }
+    document.documentElement.lang = initialLocale;
+    document.documentElement.dir = initialLocale === "fa" ? "rtl" : "ltr";
+    document.documentElement.dataset.theme = initialTheme;
+    setLocale(initialLocale);
+    setTheme(initialTheme);
     setPreferencesLoaded(true);
   }, []);
   useEffect(() => {
@@ -219,7 +226,7 @@ export default function EffectsStudio({ signedIn, name, userId }: {
     finally { setBusy(false); }
   };
 
-  return <main className={styles.page}>
+  return <main className={styles.page} style={{ visibility: preferencesLoaded ? "visible" : "hidden" }}>
     <header className={styles.header}>
       <a className={styles.brand} href="/">Ailoom</a>
       <div className={styles.controls}>
@@ -234,7 +241,7 @@ export default function EffectsStudio({ signedIn, name, userId }: {
         <div className={styles.meta}><span>{t.signedIn} {name}</span><span>{t.provider}</span></div>
         {(error || notice) && <p className={error ? styles.error : styles.notice} role={error ? "alert" : "status"}>{error || notice}</p>}
         <section className={styles.card} aria-labelledby="effects-form-title">
-          <div className={styles.cardHeading}><div><small>01 / CREATE</small><h2 id="effects-form-title">{t.formTitle}</h2></div><span className={styles.modelBadge}>SFX</span></div>
+          <div className={styles.cardHeading}><div><small>{t.formEyebrow}</small><h2 id="effects-form-title">{t.formTitle}</h2></div><span className={styles.modelBadge}>SFX</span></div>
           <form onSubmit={event => void create(event)}>
             <label htmlFor="effect-model">{t.model}<ThemedSelect id="effect-model" value={modelId} onValueChange={value => {
               setModelId(value as EffectInput["modelId"]);
@@ -251,7 +258,7 @@ export default function EffectsStudio({ signedIn, name, userId }: {
             <div className={styles.settings}>
               <label htmlFor="effect-duration">{t.duration}<ThemedSelect id="effect-duration" value={durationSec} onValueChange={value => setDurationSec(Number(value))}>
                 {(modelId === ELEVEN_MODEL_ID ? [5, 10, 20, 22] : [5, 10, 20, 30])
-                  .map(seconds => <option key={seconds} value={seconds}>{seconds} s</option>)}</ThemedSelect></label>
+                  .map(seconds => <option key={seconds} value={seconds}>{seconds} {t.seconds}</option>)}</ThemedSelect></label>
               {modelId === STABLE_MODEL_ID ? <label htmlFor="effect-format">{t.format}<ThemedSelect id="effect-format" value={outputFormat} onValueChange={value => setOutputFormat(value as "mp3" | "wav")}><option value="mp3">MP3</option><option value="wav">WAV</option></ThemedSelect></label>
                 : <label htmlFor="effect-influence">{t.influence}<input id="effect-influence" type="number" min={0} max={1} step={0.1} value={promptInfluence} onChange={event => setPromptInfluence(Number(event.target.value))} /></label>}
             </div>
@@ -264,7 +271,7 @@ export default function EffectsStudio({ signedIn, name, userId }: {
           <div className={styles.disclosure}><p>{t.private}</p><a href={modelDocs[modelId]} target="_blank" rel="noreferrer">{t.source} ↗</a></div>
         </section>
         <section className={styles.library} aria-labelledby="effects-list-title">
-          <div className={styles.libraryHeading}><div><small>02 / LIBRARY</small><h2 id="effects-list-title">{t.list}</h2></div><button type="button" onClick={() => void refresh()}>{t.refresh}</button></div>
+          <div className={styles.libraryHeading}><div><small>{t.libraryEyebrow}</small><h2 id="effects-list-title">{t.list}</h2></div><button type="button" onClick={() => void refresh()}>{t.refresh}</button></div>
           {!effects.length ? <p className={styles.empty}>{t.empty}</p> : <ul className={styles.list}>{effects.map(item => {
             const audioUrl = privateAudioUrl(item.output);
             return <li key={item.id} className={styles.effect}>

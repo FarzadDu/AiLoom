@@ -25,10 +25,11 @@ export async function POST(request: Request) {
   const current = await getCurrentUser(request.headers);
   if (!current) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
-  const requestId = request.headers.get("Idempotency-Key");
-  if (!requestId || !z.uuid().safeParse(requestId).success) {
+  const rawRequestId = request.headers.get("Idempotency-Key");
+  if (!rawRequestId || !z.uuid().safeParse(rawRequestId).success) {
     return Response.json({ error: "A UUID request key is required." }, { status: 400 });
   }
+  const requestId = rawRequestId.toLowerCase();
   if (!process.env.ELEVENLABS_API_KEY?.trim()) {
     return Response.json({ error: "ElevenLabs is not configured." }, { status: 503 });
   }

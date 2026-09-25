@@ -119,7 +119,7 @@ test("private character route checks ownership, replays one job and reloads in I
     assert.equal((await send({ ...input, imageSize: "invalid" })).status, 400);
     let probeCount = 0;
     globalThis.fetch = async () => { probeCount++; return new Response("x", { status: 206 }); };
-    const queued = await send(input);
+    const queued = await send(input, key.toUpperCase());
     assert.equal(queued.status, 202);
     const body = await queued.json();
     assert.equal(body.job.id, key);

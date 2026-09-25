@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, desc, eq, isNull, lte, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db";
 import { generationJob } from "../db/schema";
@@ -71,7 +71,8 @@ export function createGenerationJob(ownerId: string, input: {
 }) {
   const { payload, idempotencyKey, ...metadata } = input;
   const parsed = newJobSchema.parse(metadata);
-  const jobId = idempotencyKey === undefined ? randomUUID() : z.uuid().parse(idempotencyKey);
+  // UUID spellings are case-insensitive; SQLite text primary keys are not.
+  const jobId = idempotencyKey === undefined ? randomUUID() : z.uuid().parse(idempotencyKey).toLowerCase();
   requireOwnedProject(ownerId, parsed.projectId);
   const now = new Date();
   const record = {
@@ -82,23 +83,32 @@ export function createGenerationJob(ownerId: string, input: {
     costEstimateMicrosUsd: parsed.costEstimateMicrosUsd ?? null, errorCode: null,
     createdAt: now, updatedAt: now, completedAt: null
   };
+  const replay = (existing: typeof generationJob.$inferSelect | undefined) => {
+    if (!existing || existing.ownerId !== ownerId || existing.kind !== parsed.kind ||
+      existing.provider !== parsed.provider || existing.providerModel !== parsed.providerModel ||
+      existing.projectId !== (parsed.projectId ?? null) ||
+      !isDeepStrictEqual(comparablePayload(decodeJson(existing.inputJson)), comparablePayload(payload))) {
+      throw new GenerationIdempotencyConflictError();
+    }
+    return hydrate(existing);
+  };
+  // Rows written before UUID normalization may have uppercase IDs. Check them
+  // before inserting the canonical ID so a retry cannot enqueue a second job.
+  const prior = idempotencyKey === undefined ? null : getDb().select().from(generationJob)
+    .where(sql`lower(${generationJob.id}) = ${jobId}`).get();
+  if (prior) return replay(prior);
   const inserted = getDb().insert(generationJob).values(record).onConflictDoNothing().run();
   if (inserted.changes === 1) return hydrate(record);
   // The primary key is the caller's stable request UUID. A duplicate response
   // returns the existing job only for precisely the same owner and request.
   const existing = getDb().select().from(generationJob).where(eq(generationJob.id, jobId)).get();
-  if (!existing || existing.ownerId !== ownerId || existing.kind !== parsed.kind ||
-    existing.provider !== parsed.provider || existing.providerModel !== parsed.providerModel ||
-    existing.projectId !== (parsed.projectId ?? null) ||
-    !isDeepStrictEqual(comparablePayload(decodeJson(existing.inputJson)), comparablePayload(payload))) {
-    throw new GenerationIdempotencyConflictError();
-  }
-  return hydrate(existing);
+  return replay(existing);
 }
 
 export function getGenerationJob(ownerId: string, jobId: string) {
   const row = getDb().select().from(generationJob)
-    .where(and(eq(generationJob.id, jobId), eq(generationJob.ownerId, ownerId))).get();
+    .where(and(sql`lower(${generationJob.id}) = ${jobId.toLowerCase()}`,
+      eq(generationJob.ownerId, ownerId))).get();
   return row ? hydrate(row) : null;
 }
 

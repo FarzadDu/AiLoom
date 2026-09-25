@@ -43,7 +43,8 @@ const copy = {
     providerRejected: "ElevenLabs rejected this request.", outputUnavailable: "The lossless output could not be saved within the 100 MB limit.",
     providerFailed: "ElevenLabs could not finish this dub.", retrying: "Ailoom is retrying the private download with a fresh provider link.",
     chooseFirst: "Choose a private source file.", requestFailed: "The request could not be completed. Refresh the list before trying again.",
-    uploadFailed: "The source upload failed.", english: "English", persian: "فارسی", light: "Light", dark: "Dark"
+    uploadFailed: "The source upload failed.", english: "English", persian: "فارسی", light: "Light", dark: "Dark",
+    switchLanguage: "Switch language", switchTheme: "Switch theme"
   },
   fa: {
     back: "بازگشت به Ailoom", eyebrow: "صدا / دوبله", title: "داستانت، به زبانی دیگر.",
@@ -67,7 +68,8 @@ const copy = {
     providerRejected: "ElevenLabs این درخواست را رد کرد.", outputUnavailable: "خروجی بدون افت کیفیت در سقف ۱۰۰ مگابایت قابل ذخیره نبود.",
     providerFailed: "ElevenLabs نتوانست دوبله را کامل کند.", retrying: "Ailoom با لینک تازهٔ سرویس‌دهنده، دانلود خصوصی را دوباره امتحان می‌کند.",
     chooseFirst: "یک فایل منبع خصوصی انتخاب کن.", requestFailed: "درخواست کامل نشد. پیش از تلاش دوباره فهرست را تازه کن.",
-    uploadFailed: "بارگذاری فایل منبع ناموفق بود.", english: "English", persian: "فارسی", light: "روشن", dark: "تیره"
+    uploadFailed: "بارگذاری فایل منبع ناموفق بود.", english: "English", persian: "فارسی", light: "روشن", dark: "تیره",
+    switchLanguage: "تغییر زبان", switchTheme: "تغییر پوسته"
   }
 } as const;
 
@@ -120,10 +122,17 @@ export default function DubbingStudio({ signedIn, name }: { signedIn: boolean; n
   const t = copy[locale];
 
   useEffect(() => {
+    let initialLocale: Locale = "en";
+    let initialTheme: Theme = "light";
     try {
-      setLocale(localStorage.getItem("ailoom.locale") === "fa" ? "fa" : "en");
-      setTheme(localStorage.getItem("ailoom.theme") === "dark" ? "dark" : "light");
+      initialLocale = localStorage.getItem("ailoom.locale") === "fa" ? "fa" : "en";
+      initialTheme = localStorage.getItem("ailoom.theme") === "dark" ? "dark" : "light";
     } catch { /* Private browser mode may disable local storage. */ }
+    document.documentElement.lang = initialLocale;
+    document.documentElement.dir = initialLocale === "fa" ? "rtl" : "ltr";
+    document.documentElement.dataset.theme = initialTheme;
+    setLocale(initialLocale);
+    setTheme(initialTheme);
     setPreferencesLoaded(true);
   }, []);
   useEffect(() => {
@@ -247,12 +256,12 @@ export default function DubbingStudio({ signedIn, name }: { signedIn: boolean; n
     return "";
   }
 
-  return <main className={styles.page}>
+  return <main className={styles.page} style={{ visibility: preferencesLoaded ? "visible" : "hidden" }}>
     <header className={styles.header}>
       <a className={styles.brand} href="/">Ailoom</a>
       <div className={styles.controls}>
-        <button type="button" onClick={() => setLocale(locale === "en" ? "fa" : "en")} aria-label="Switch language">{locale === "en" ? t.persian : t.english}</button>
-        <button type="button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label="Switch theme">{theme === "light" ? t.dark : t.light}</button>
+        <button type="button" onClick={() => setLocale(locale === "en" ? "fa" : "en")} aria-label={t.switchLanguage}>{locale === "en" ? t.persian : t.english}</button>
+        <button type="button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label={t.switchTheme}>{theme === "light" ? t.dark : t.light}</button>
       </div>
     </header>
     <div className={styles.content}>

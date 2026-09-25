@@ -174,7 +174,7 @@ test("private inpaint checks ownership and dimensions before queueing, then repl
     assert.equal((await send({ ...input, maskAssetId: mismatchedMaskId })).status, 422);
     let probeCount = 0;
     globalThis.fetch = async () => { probeCount++; return new Response("x", { status: 206 }); };
-    const queued = await send(input);
+    const queued = await send(input, key.toUpperCase());
     assert.equal(queued.status, 202);
     const body = await queued.json();
     assert.equal(body.job.id, key);

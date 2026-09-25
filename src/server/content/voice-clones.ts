@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, inArray, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { voiceClone, voiceSpeech } from "../db/schema";
 import { getOwnedAsset } from "./assets";
@@ -25,15 +25,24 @@ export function reserveVoiceClone(input: {
   ownerId: string; requestId: string; name: string; sampleHash: string;
   sampleMimeType: string; sampleSizeBytes: number;
 }) {
+  const requestId = input.requestId.toLowerCase();
+  const prior = getDb().select().from(voiceClone)
+    .where(sql`lower(${voiceClone.id}) = ${requestId}`).get();
+  if (prior) {
+    if (prior.ownerId !== input.ownerId || prior.name !== input.name ||
+      prior.sampleHash !== input.sampleHash || prior.sampleMimeType !== input.sampleMimeType ||
+      prior.sampleSizeBytes !== input.sampleSizeBytes) throw new VoiceRequestConflictError();
+    return { voice: prior, created: false };
+  }
   const now = new Date();
-  const providerName = `${input.name.slice(0, 70)} · Ailoom ${input.requestId.replaceAll("-", "").slice(0, 16)}`;
-  const row = { id: input.requestId, ownerId: input.ownerId, name: input.name, providerName,
+  const providerName = `${input.name.slice(0, 70)} · Ailoom ${requestId.replaceAll("-", "").slice(0, 16)}`;
+  const row = { id: requestId, ownerId: input.ownerId, name: input.name, providerName,
     sampleHash: input.sampleHash, sampleMimeType: input.sampleMimeType,
     sampleSizeBytes: input.sampleSizeBytes, consentAt: now,
     state: "submitting" as const, providerVoiceId: null,
     createdAt: now, updatedAt: now };
   const inserted = getDb().insert(voiceClone).values(row).onConflictDoNothing().run().changes === 1;
-  const current = getDb().select().from(voiceClone).where(eq(voiceClone.id, input.requestId)).get();
+  const current = getDb().select().from(voiceClone).where(eq(voiceClone.id, requestId)).get();
   if (!current || current.ownerId !== input.ownerId || current.name !== input.name ||
     current.sampleHash !== input.sampleHash || current.sampleMimeType !== input.sampleMimeType ||
     current.sampleSizeBytes !== input.sampleSizeBytes) throw new VoiceRequestConflictError();
@@ -49,7 +58,8 @@ export function finishVoiceClone(ownerId: string, id: string,
 
 export function getOwnedVoiceClone(ownerId: string, id: string) {
   return getDb().select().from(voiceClone)
-    .where(and(eq(voiceClone.ownerId, ownerId), eq(voiceClone.id, id))).get() ?? null;
+    .where(and(eq(voiceClone.ownerId, ownerId),
+      sql`lower(${voiceClone.id}) = ${id.toLowerCase()}`)).get() ?? null;
 }
 
 export function reconcileVoiceClone(ownerId: string, id: string, providerVoiceId: string,
@@ -60,7 +70,7 @@ export function reconcileVoiceClone(ownerId: string, id: string, providerVoiceId
     throw new VoiceRequestConflictError();
   }
   getDb().update(voiceClone).set({ providerVoiceId, state, updatedAt: new Date() })
-    .where(and(eq(voiceClone.id, id), eq(voiceClone.ownerId, ownerId),
+    .where(and(eq(voiceClone.id, current.id), eq(voiceClone.ownerId, ownerId),
       inArray(voiceClone.state, ["uncertain", "verification_required"]))).run();
   return getOwnedVoiceClone(ownerId, id);
 }
@@ -77,12 +87,20 @@ export function listOwnedVoiceClones(ownerId: string) {
 export function reserveVoiceSpeech(input: {
   ownerId: string; requestId: string; cloneId: string; inputHash: string;
 }) {
+  const requestId = input.requestId.toLowerCase();
+  const prior = getDb().select().from(voiceSpeech)
+    .where(sql`lower(${voiceSpeech.id}) = ${requestId}`).get();
+  if (prior) {
+    if (prior.ownerId !== input.ownerId || prior.cloneId !== input.cloneId ||
+      prior.inputHash !== input.inputHash) throw new VoiceRequestConflictError();
+    return { speech: prior, created: false };
+  }
   const now = new Date();
-  const row = { id: input.requestId, ownerId: input.ownerId, cloneId: input.cloneId,
+  const row = { id: requestId, ownerId: input.ownerId, cloneId: input.cloneId,
     inputHash: input.inputHash, state: "submitting" as const, outputAssetId: null,
     createdAt: now, updatedAt: now };
   const inserted = getDb().insert(voiceSpeech).values(row).onConflictDoNothing().run().changes === 1;
-  const current = getDb().select().from(voiceSpeech).where(eq(voiceSpeech.id, input.requestId)).get();
+  const current = getDb().select().from(voiceSpeech).where(eq(voiceSpeech.id, requestId)).get();
   if (!current || current.ownerId !== input.ownerId || current.cloneId !== input.cloneId ||
     current.inputHash !== input.inputHash) throw new VoiceRequestConflictError();
   return { speech: current, created: inserted };
@@ -98,7 +116,8 @@ export function finishVoiceSpeech(ownerId: string, id: string,
 
 export function getOwnedVoiceSpeech(ownerId: string, id: string) {
   return getDb().select().from(voiceSpeech)
-    .where(and(eq(voiceSpeech.ownerId, ownerId), eq(voiceSpeech.id, id))).get() ?? null;
+    .where(and(eq(voiceSpeech.ownerId, ownerId),
+      sql`lower(${voiceSpeech.id}) = ${id.toLowerCase()}`)).get() ?? null;
 }
 
 export function listOwnedVoiceSpeech(ownerId: string) {

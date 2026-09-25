@@ -7,6 +7,11 @@ export function chatScrollIsNearBottom(scrollTop: number, clientHeight: number, 
   return scrollHeight - clientHeight - scrollTop <= 96;
 }
 
+/** Keep the same message under the reader when an older page is inserted above it. */
+export function chatScrollAfterPrepend(previousTop: number, previousHeight: number, currentHeight: number): number {
+  return Math.max(0, previousTop + currentHeight - previousHeight);
+}
+
 /** A retry replaces only the matching failed local bubble, not unrelated draft history. */
 export function appendOptimisticChatTurn(
   previous: ChatMessage[], failed: FailedOptimisticTurn | null, identity: string,

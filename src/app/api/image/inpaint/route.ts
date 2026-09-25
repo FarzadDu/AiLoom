@@ -65,10 +65,11 @@ export async function POST(request: Request) {
   const current = await getCurrentUser(request.headers);
   if (!current) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!mutationOriginAllowed(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
-  const key = request.headers.get("Idempotency-Key");
-  if (!key || !z.uuid().safeParse(key).success) {
+  const rawKey = request.headers.get("Idempotency-Key");
+  if (!rawKey || !z.uuid().safeParse(rawKey).success) {
     return Response.json({ error: "A valid request key is required." }, { status: 400 });
   }
+  const key = rawKey.toLowerCase();
   const parsed = await parseBoundedJson(request, requestSchema, 12_000, "Invalid inpaint request.");
   if (!parsed.success) return parsed.response;
   const input = parsed.data;

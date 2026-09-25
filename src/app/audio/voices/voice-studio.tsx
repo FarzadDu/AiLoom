@@ -11,7 +11,7 @@ type Speech = { id: string; cloneId: string; state: "submitting" | "ready" | "fa
 
 const copy = {
   en: {
-    back: "Back to Ailoom", title: "Your voices", subtitle: "Build an instant clone from a recording you own or have permission to use, then speak in your own voice.",
+    back: "Back to Ailoom", eyebrow: "VOICE STUDIO / 01", title: "Your voices", subtitle: "Build an instant clone from a recording you own or have permission to use, then speak in your own voice.",
     signIn: "Sign in on the Ailoom home page to use private voice tools.",
     yourName: "Signed in as", refresh: "Refresh", create: "Create a voice", voiceName: "Voice name", namePlaceholder: "e.g. My narration voice",
     sample: "Voice recording", choose: "Choose MP3, WAV or OGG", sampleHint: "One clear 1–2 minute recording is recommended. Maximum file size: 20 MB. The sample is sent to ElevenLabs and is not stored by Ailoom.",
@@ -32,7 +32,7 @@ const copy = {
     played: "Generated speech", english: "English", persian: "فارسی", light: "Light", dark: "Dark"
   },
   fa: {
-    back: "بازگشت به Ailoom", title: "صداهای تو", subtitle: "از صدایی که متعلق به توست یا برای استفاده از آن اجازه داری، نمونهٔ فوری بساز و سپس متن را با همان صدا بخوان.",
+    back: "بازگشت به Ailoom", eyebrow: "استودیوی صدا / ۰۱", title: "صداهای تو", subtitle: "از صدایی که متعلق به توست یا برای استفاده از آن اجازه داری، نمونهٔ فوری بساز و سپس متن را با همان صدا بخوان.",
     signIn: "برای استفاده از ابزارهای خصوصی صدا، در صفحهٔ اصلی Ailoom وارد شو.",
     yourName: "واردشده با نام", refresh: "تازه‌سازی", create: "ساخت صدای تازه", voiceName: "نام صدا", namePlaceholder: "مثلاً صدای گویندگی من",
     sample: "نمونهٔ صدا", choose: "انتخاب MP3، WAV یا OGG", sampleHint: "یک ضبط واضح ۱ تا ۲ دقیقه‌ای پیشنهاد می‌شود. حداکثر اندازهٔ فایل ۲۰ مگابایت است. نمونه به ElevenLabs فرستاده می‌شود و Ailoom آن را ذخیره نمی‌کند.",
@@ -83,10 +83,17 @@ export default function VoiceStudio({ signedIn, name }: { signedIn: boolean; nam
   const t = copy[locale];
 
   useEffect(() => {
+    let initialLocale: Locale = "en";
+    let initialTheme: Theme = "light";
     try {
-      setLocale(localStorage.getItem("ailoom.locale") === "fa" ? "fa" : "en");
-      setTheme(localStorage.getItem("ailoom.theme") === "dark" ? "dark" : "light");
+      initialLocale = localStorage.getItem("ailoom.locale") === "fa" ? "fa" : "en";
+      initialTheme = localStorage.getItem("ailoom.theme") === "dark" ? "dark" : "light";
     } catch { /* Private browser mode may disable local storage. */ }
+    document.documentElement.lang = initialLocale;
+    document.documentElement.dir = initialLocale === "fa" ? "rtl" : "ltr";
+    document.documentElement.dataset.theme = initialTheme;
+    setLocale(initialLocale);
+    setTheme(initialTheme);
     setPreferencesLoaded(true);
   }, []);
   useEffect(() => {
@@ -202,7 +209,7 @@ export default function VoiceStudio({ signedIn, name }: { signedIn: boolean; nam
     finally { setCheckingVoiceId(null); void refresh(); }
   };
 
-  return <main className={styles.page}>
+  return <main className={styles.page} style={{ visibility: preferencesLoaded ? "visible" : "hidden" }}>
     <header className={styles.header}>
       <a className={styles.brand} href="/">Ailoom</a>
       <div className={styles.controls}>
@@ -212,7 +219,7 @@ export default function VoiceStudio({ signedIn, name }: { signedIn: boolean; nam
     </header>
     <div className={styles.content}>
       <a className={styles.back} href="/#audio">← {t.back}</a>
-      <div className={styles.intro}><p>VOICE STUDIO / 01</p><h1>{t.title}</h1><span>{t.subtitle}</span></div>
+      <div className={styles.intro}><p>{t.eyebrow}</p><h1>{t.title}</h1><span>{t.subtitle}</span></div>
       {!signedIn ? <section className={styles.card}><p>{t.signIn}</p><a className={styles.action} href="/#audio">{t.back}</a></section> : <>
         <div className={styles.meta}><span>{t.yourName} {name}</span><button type="button" onClick={() => void refresh()}>{t.refresh}</button></div>
         {(error || notice) && <p className={error ? styles.error : styles.notice} role={error ? "alert" : "status"}>{error || notice}</p>}

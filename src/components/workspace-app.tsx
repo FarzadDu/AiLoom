@@ -33,7 +33,7 @@ import {
   X,
   type LucideIcon
 } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type RefObject } from "react";
 import { conversationsFromPayload, messagesFromPayload, modelsFromPayload, projectsFromPayload, readChatStream, responseError, sessionUserFromPayload, type ChatMessage, type ChatModel, type ChatProject, type ConversationSummary, type SessionUser } from "./chat-api";
 import { prepareChatModelCatalog } from "./chat-model-catalog";
 import { ChatProjects, projectLabel } from "./chat-projects";
@@ -47,11 +47,13 @@ import { firstLastRequestIdentity, type FirstLastControls } from "./first-last-r
 import { repairRequestIdentity } from "./repair-request";
 import { InpaintCanvas } from "./inpaint-canvas";
 import { ChatVoiceInput } from "./chat-voice-input";
+import { ChatMarkdown } from "./chat-markdown";
+import { audioPriceNote } from "./audio-price-note";
 import { generationRequestIdentity, parsePendingGeneration, uncertainGenerationMatches } from "./generation-idempotency";
 import { parsePendingChatTurn, reconcileCompletedChatTurn, samePendingTurn, type ChatTurnInput, type PendingChatTurn } from "./chat-turn-idempotency";
 import { specialistChatTransition, type SpecialistChatId } from "./specialist-chat";
 import { captureChatContext } from "./chat-context-lease";
-import { appendOptimisticChatTurn, chatScrollIsNearBottom, createSerialAsyncQueue, type FailedOptimisticTurn } from "./chat-ui-state";
+import { appendOptimisticChatTurn, chatScrollAfterPrepend, chatScrollIsNearBottom, createSerialAsyncQueue, type FailedOptimisticTurn } from "./chat-ui-state";
 import { ThemedSelect } from "./themed-select";
 import { retainImageReferenceOnModeChange, usableReference } from "./media-reference";
 
@@ -369,6 +371,17 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, historyLoa
   const messagesAreaRef = useRef<HTMLDivElement>(null);
   const followingReplyRef = useRef(true);
   const lastRenderedThread = useRef<{ id: string | null; firstId: string | null }>({ id: null, firstId: null });
+  const prependSnapshotRef = useRef<{ id: string | null; firstId: string | null; top: number; height: number } | null>(null);
+  useLayoutEffect(() => {
+    const snapshot = prependSnapshotRef.current;
+    if (!snapshot) return;
+    if (messageLoading || selectedId !== snapshot.id) { prependSnapshotRef.current = null; return; }
+    if (messages[0]?.id !== snapshot.firstId) {
+      const area = messagesAreaRef.current;
+      if (area) area.scrollTop = chatScrollAfterPrepend(snapshot.top, snapshot.height, area.scrollHeight);
+      prependSnapshotRef.current = null;
+    } else if (!olderMessagesLoading) prependSnapshotRef.current = null;
+  }, [messages, selectedId, messageLoading, olderMessagesLoading]);
   useEffect(() => {
     if (messageLoading) {
       lastRenderedThread.current = { id: null, firstId: null };
@@ -411,12 +424,18 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, historyLoa
           followingReplyRef.current = chatScrollIsNearBottom(area.scrollTop, area.clientHeight, area.scrollHeight);
         }} role="log" aria-live="polite" aria-label={t.nav.chat}>
           {messageLoading ? <div className="chat-empty"><p>{t.loadingMessages}</p></div>
-            : messages.length ? <div className="message-stack">{hasOlderMessages && <button type="button" className="messages-more-button" onClick={onLoadOlderMessages} disabled={olderMessagesLoading}>{olderMessagesLoading ? locale === "fa" ? "در حال بارگذاری…" : "Loading…" : locale === "fa" ? "پیام‌های قدیمی‌تر" : "Older messages"}</button>}{messages.map(message =>
+            : messages.length ? <div className="message-stack">{hasOlderMessages && <button type="button" className="messages-more-button" onClick={() => {
+              const area = messagesAreaRef.current;
+              if (area) prependSnapshotRef.current = { id: selectedId, firstId: messages[0]?.id ?? null,
+                top: area.scrollTop, height: area.scrollHeight };
+              onLoadOlderMessages();
+            }} disabled={olderMessagesLoading}>{olderMessagesLoading ? locale === "fa" ? "در حال بارگذاری…" : "Loading…" : locale === "fa" ? "پیام‌های قدیمی‌تر" : "Older messages"}</button>}{messages.map(message =>
               <div key={message.id} className={`chat-message chat-message-${message.role}${message.status === "error" ? " chat-message-error" : ""}`}>
                 <span className="message-icon" aria-hidden="true">{message.role === "assistant" ? <BrandMark /> : (user.name?.trim()[0] || user.email[0] || "U").toUpperCase()}</span>
                 <div className="message-body">
                   <span className="message-author">{message.role === "assistant" ? "Ailoom" : user.name || user.email}</span>
-                  {(message.text || message.status === "streaming") && <div dir={directionForText(message.text, locale)}>{renderMessageText(message.text || "…")}</div>}
+                  {(message.text || message.status === "streaming") && <div dir={directionForText(message.text, locale)}>{message.role === "assistant"
+                    ? <ChatMarkdown text={message.text || "…"} /> : renderMessageText(message.text || "…")}</div>}
                   {message.status === "error" && <span className="message-delivery-note">{locale === "fa" ? "ارسال این پیام تأیید نشد؛ متن برای تلاش دوباره اینجاست." : "Delivery could not be confirmed. Your message is kept here for retry."}</span>}
                   {message.blocks?.filter(block => block.type !== "text").map((block, index) => {
                     if (block.type === "sources") return <div className="message-sources" key={`sources-${index}`}><strong><BookOpen size={16} aria-hidden="true" />{t.sourceLinks}</strong><div>{block.sources?.map(source => <a key={source.url} href={source.url} target="_blank" rel="noopener noreferrer">{source.title}<ArrowRight size={14} aria-hidden="true" /></a>)}</div></div>;
@@ -962,7 +981,7 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
           {showRepair && <div className="repair-controls"><div className="repair-title"><Scissors size={17} aria-hidden="true" /><strong>{t.repairRange}</strong></div><p>{preview ? t.repairHint : t.noClip}</p><div className="repair-fields"><div className="form-field"><label htmlFor="repair-start">{t.startTime}</label><div className="input-suffix"><input id="repair-start" type="number" min={0} max={Math.max(0, repairEnd - 1)} step={0.1} value={repairStart} onChange={event => setRepairStart(Math.max(0, Math.min(repairEnd - .1, Number(event.target.value) || 0)))} /><span>s</span></div></div><div className="form-field"><label htmlFor="repair-end">{t.endTime}</label><div className="input-suffix"><input id="repair-end" type="number" min={repairStart + .1} max={clipDuration} step={0.1} value={repairEnd} onChange={event => setRepairEnd(Math.min(clipDuration, Math.max(repairStart + .1, Number(event.target.value) || repairStart + .1)))} /><span>s</span></div></div></div></div>}
           <div className="inspector-spacer" />
             <button className="primary-action" type="button" onClick={handleGenerate} disabled={!selectModels.length || busy || upscaleWorking || inpaintWorking || characterWorking || audioWorking}>{busy || upscaleWorking || inpaintWorking || characterWorking || audioWorking ? t.generationQueued : showUpscale ? t.upscaleAction : showRepair ? t.repairRange : t.generate}<ArrowRight size={17} aria-hidden="true" /></button>
-            {view === "audio" && activeMode === 1 && <p className="inspector-note">{selectedModel?.priceNote ?? t.noPriceEstimate}</p>}
+            {view === "audio" && activeMode === 1 && <p className="inspector-note">{audioPriceNote(locale, effectiveModel, selectedModel?.priceNote)}</p>}
             {showInpaint && <p className="inspector-note">{t.inpaintCost}</p>}
             {showCharacter && <p className="inspector-note">{t.characterCost}</p>}
         </aside>

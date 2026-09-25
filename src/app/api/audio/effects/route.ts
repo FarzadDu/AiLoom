@@ -34,6 +34,7 @@ export async function POST(request: Request) {
   if (!requestKey || !z.uuid().safeParse(requestKey).success) {
     return Response.json({ error: "A valid request key is required." }, { status: 400 });
   }
+  const key = requestKey.toLowerCase();
   let input: JsonValue;
   try { input = await readBoundedJson(request, 16_000) as JsonValue; }
   catch (error) {
@@ -48,7 +49,7 @@ export async function POST(request: Request) {
     }
     const effect = createGenerationJob(current.id, {
       kind: "audio", provider: prepared.provider, providerModel: prepared.modelId,
-      payload: input, idempotencyKey: requestKey
+      payload: input, idempotencyKey: key
     });
     return Response.json({ effect: publicJob(effect) }, { status: 202,
       headers: { "Cache-Control": "private, no-store" } });

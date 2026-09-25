@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { appendOptimisticChatTurn, chatScrollIsNearBottom, createSerialAsyncQueue } from "../src/components/chat-ui-state";
+import { appendOptimisticChatTurn, chatScrollAfterPrepend, chatScrollIsNearBottom, createSerialAsyncQueue } from "../src/components/chat-ui-state";
 import type { ChatMessage } from "../src/components/chat-api";
 
 test("chat follows streaming replies only while the reader is near the bottom", () => {
   assert.equal(chatScrollIsNearBottom(804, 400, 1200), true);
   assert.equal(chatScrollIsNearBottom(705, 400, 1200), true);
   assert.equal(chatScrollIsNearBottom(700, 400, 1200), false);
+});
+
+test("prepending older messages preserves the reader's scroll position", () => {
+  assert.equal(chatScrollAfterPrepend(120, 1000, 1450), 570);
+  assert.equal(chatScrollAfterPrepend(0, 1000, 1200), 200);
+  assert.equal(chatScrollAfterPrepend(20, 1000, 960), 0);
 });
 
 test("retry replaces only the matching failed local bubble", () => {

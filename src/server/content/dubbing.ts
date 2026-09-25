@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { dubbingJob } from "../db/schema";
 import { getOwnedAsset } from "./assets";
@@ -28,16 +28,25 @@ export function reserveDubbingJob(input: {
   sourceKind: "audio" | "video"; sourceLanguage: string | null;
   targetLanguage: string;
 }) {
-  const now = new Date();
+  const requestId = input.requestId.toLowerCase();
+  const prior = getDb().select().from(dubbingJob)
+    .where(sql`lower(${dubbingJob.id}) = ${requestId}`).get();
   const inputHash = dubbingInputDigest(input);
-  const row = { id: input.requestId, ownerId: input.ownerId, sourceAssetId: input.sourceAssetId,
+  if (prior) {
+    if (prior.ownerId !== input.ownerId || prior.inputHash !== inputHash) {
+      throw new DubbingRequestConflictError();
+    }
+    return { job: prior, created: false };
+  }
+  const now = new Date();
+  const row = { id: requestId, ownerId: input.ownerId, sourceAssetId: input.sourceAssetId,
     sourceKind: input.sourceKind, sourceLanguage: input.sourceLanguage,
     targetLanguage: input.targetLanguage, inputHash, state: "queued" as const,
     providerProjectId: null, providerLanguageId: null, outputAssetId: null,
     errorCode: null, leaseOwner: null, leaseExpiresAt: null, nextPollAt: null,
     createdAt: now, updatedAt: now };
   const inserted = getDb().insert(dubbingJob).values(row).onConflictDoNothing().run().changes === 1;
-  const current = getDb().select().from(dubbingJob).where(eq(dubbingJob.id, input.requestId)).get();
+  const current = getDb().select().from(dubbingJob).where(eq(dubbingJob.id, requestId)).get();
   if (!current || current.ownerId !== input.ownerId || current.inputHash !== inputHash) {
     throw new DubbingRequestConflictError();
   }
@@ -46,7 +55,8 @@ export function reserveDubbingJob(input: {
 
 export function getOwnedDubbingJob(ownerId: string, id: string) {
   return getDb().select().from(dubbingJob)
-    .where(and(eq(dubbingJob.ownerId, ownerId), eq(dubbingJob.id, id))).get() ?? null;
+    .where(and(eq(dubbingJob.ownerId, ownerId),
+      sql`lower(${dubbingJob.id}) = ${id.toLowerCase()}`)).get() ?? null;
 }
 
 export function listOwnedDubbingJobs(ownerId: string) {
@@ -104,6 +114,8 @@ export function finishDubbingSubmission(id: string, leaseOwner: string,
 export function reconcileUncertainDubbingJob(ownerId: string, id: string,
   outcome: { state: "running"; projectId: string; languageId: string } |
     { state: "failed"; projectId: string }) {
+  const current = getOwnedDubbingJob(ownerId, id);
+  if (!current) return null;
   const now = new Date();
   const set = outcome.state === "running" ? {
     state: "running" as const, providerProjectId: outcome.projectId,
@@ -111,7 +123,7 @@ export function reconcileUncertainDubbingJob(ownerId: string, id: string,
     errorCode: null, updatedAt: now
   } : { state: "failed" as const, providerProjectId: outcome.projectId,
     errorCode: "provider_project_failed", updatedAt: now };
-  getDb().update(dubbingJob).set(set).where(and(eq(dubbingJob.id, id),
+  getDb().update(dubbingJob).set(set).where(and(eq(dubbingJob.id, current.id),
     eq(dubbingJob.ownerId, ownerId), eq(dubbingJob.state, "uncertain"))).run();
   return getOwnedDubbingJob(ownerId, id);
 }

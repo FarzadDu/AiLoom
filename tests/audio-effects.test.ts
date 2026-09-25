@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, test } from "node:test";
+import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { listMediaModels } from "../src/server/media/registry";
 import { getMediaTask, MediaRequestError, prepareMediaRequest, submitMediaRequest } from "../src/server/media/service";
@@ -13,8 +14,8 @@ const directory = mkdtempSync(join(tmpdir(), "ailoom-effects-test-"));
 process.env.DATABASE_PATH = join(directory, "test.sqlite");
 
 const { getDb, getSqlite } = await import("../src/server/db");
-const { user } = await import("../src/server/db/schema");
-const { createGenerationJob, GenerationIdempotencyConflictError, listGenerationJobs } =
+const { user, generationJob } = await import("../src/server/db/schema");
+const { createGenerationJob, GenerationIdempotencyConflictError, getGenerationJob, listGenerationJobs } =
   await import("../src/server/content/jobs");
 migrate(getDb(), { migrationsFolder: resolve("src/server/db/migrations") });
 
@@ -77,14 +78,29 @@ test("SFX fal submission and read-only completion parse a private-importable aud
 test("owner-scoped SFX history and stable paid request key cannot cross accounts or change payload", () => {
   const key = randomUUID();
   const first = createGenerationJob(ownerId, { kind: "audio", provider: "fal", providerModel: MODEL_ID,
-    payload: input, idempotencyKey: key });
+    payload: input, idempotencyKey: key.toUpperCase() });
   const repeat = createGenerationJob(ownerId, { kind: "audio", provider: "fal", providerModel: MODEL_ID,
     payload: input, idempotencyKey: key });
   assert.equal(first.id, repeat.id);
+  assert.equal(first.id, key);
   assert.deepEqual(listGenerationJobs(ownerId, { providerModel: MODEL_ID }).map(item => item.id), [key]);
   assert.deepEqual(listGenerationJobs(anotherId, { providerModel: MODEL_ID }), []);
   assert.throws(() => createGenerationJob(ownerId, { kind: "audio", provider: "fal", providerModel: MODEL_ID,
     payload: { ...input, prompt: "Different sound" }, idempotencyKey: key }), GenerationIdempotencyConflictError);
   assert.throws(() => createGenerationJob(anotherId, { kind: "audio", provider: "fal", providerModel: MODEL_ID,
     payload: input, idempotencyKey: key }), GenerationIdempotencyConflictError);
+});
+
+test("a legacy uppercase request ID is replayed instead of enqueuing a second paid job", () => {
+  const key = "a9c1f101-b222-4ccc-8ddd-aabbccddeeff";
+  createGenerationJob(ownerId, { kind: "audio", provider: "fal", providerModel: MODEL_ID,
+    payload: input, idempotencyKey: key });
+  getDb().update(generationJob).set({ id: key.toUpperCase() })
+    .where(eq(generationJob.id, key)).run();
+  const replay = createGenerationJob(ownerId, { kind: "audio", provider: "fal", providerModel: MODEL_ID,
+    payload: input, idempotencyKey: key });
+  assert.equal(replay.id, key.toUpperCase());
+  assert.equal(getGenerationJob(ownerId, key)?.id, key.toUpperCase());
+  assert.equal(listGenerationJobs(ownerId, { providerModel: MODEL_ID })
+    .filter(job => job.id.toLowerCase() === key).length, 1);
 });

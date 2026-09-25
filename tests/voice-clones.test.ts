@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { eq } from "drizzle-orm";
 import { createInstantVoice, findInstantVoiceByExactName, getInstantVoiceVerification,
   synthesizeSpeech } from "../src/server/providers/elevenlabs";
 
@@ -79,6 +80,7 @@ test("voice API is private, consent-gated and never repeats an uncertain provide
   process.env.ELEVENLABS_API_KEY = "test-only-key";
   const originalFetch = globalThis.fetch;
   const { getDb, getSqlite } = await import("../src/server/db");
+  const { voiceClone, voiceSpeech } = await import("../src/server/db/schema");
   const { createInvite } = await import("../src/server/auth/invites");
   const { getOwnedAsset } = await import("../src/server/content/assets");
   const { getOwnedVoiceClone, getOwnedVoiceSpeech } = await import("../src/server/content/voice-clones");
@@ -129,13 +131,17 @@ test("voice API is private, consent-gated and never repeats an uncertain provide
       speechCalls++;
       return new Response(MP3);
     };
-    const created = await sendClone(owner.cookie, cloneKey, cloneForm());
+    const created = await sendClone(owner.cookie, cloneKey.toUpperCase(), cloneForm());
     assert.equal(created.status, 201);
     const voice = (await created.json()).voice as { id: string; state: string };
     assert.equal(voice.id, cloneKey);
     assert.equal(voice.state, "ready");
     assert.equal(JSON.stringify(voice).includes("sampleHash"), false);
     assert.equal(cloneCalls, 1);
+    // A record written before UUID normalization must still block paid replay.
+    getDb().update(voiceClone).set({ id: cloneKey.toUpperCase() })
+      .where(eq(voiceClone.id, cloneKey)).run();
+    assert.equal(getOwnedVoiceClone(owner.id, cloneKey)?.id, cloneKey.toUpperCase());
     assert.equal((await sendClone(owner.cookie, cloneKey, cloneForm())).status, 200);
     assert.equal(cloneCalls, 1);
     assert.equal((await sendClone(owner.cookie, cloneKey, cloneForm("Different voice"))).status, 409);
@@ -152,12 +158,15 @@ test("voice API is private, consent-gated and never repeats an uncertain provide
           "content-type": "application/json", "Idempotency-Key": key }, body: JSON.stringify({ text })
       }), speechContext);
     assert.equal((await sendSpeech(other.cookie, speechKey, "Hello")).status, 404);
-    const spoken = await sendSpeech(owner.cookie, speechKey, "سلام");
+    const spoken = await sendSpeech(owner.cookie, speechKey.toUpperCase(), "سلام");
     assert.equal(spoken.status, 201);
     const speech = (await spoken.json()).speech as { id: string; state: string; outputUrl: string };
+    assert.equal(speech.id, speechKey);
     assert.equal(speech.state, "ready");
     assert.match(speech.outputUrl, /^\/api\/assets\/[0-9a-f-]{36}$/);
     assert.equal(speechCalls, 1);
+    getDb().update(voiceSpeech).set({ id: speechKey.toUpperCase() })
+      .where(eq(voiceSpeech.id, speechKey)).run();
     assert.equal(getOwnedVoiceSpeech(other.id, speechKey), null);
     const assetId = speech.outputUrl.split("/").at(-1)!;
     assert.equal(getOwnedAsset(owner.id, assetId)?.visibility, "private");
