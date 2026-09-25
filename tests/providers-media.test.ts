@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  FalError, getFalResult, getFalTask, submitFalTask
+  decodeFalQueueReference, FalError, getFalResult, getFalTask, submitFalTask
 } from "../src/server/providers/fal";
 import {
   WaveSpeedError, getWaveSpeedTask, submitWaveSpeedTask
@@ -37,8 +37,50 @@ test("fal submits one async queue request with server key and webhook query", as
     requestId: "req_123",
     endpoint: "bytedance/seedance-2.0/reference-to-video",
     state: "queued",
-    queuePosition: 2
+    queuePosition: 2,
+    queueReference: null
   });
+});
+
+test("fal uses validated lifecycle URLs returned for a nested paid queue task", async () => {
+  const id = "req_123";
+  const queuePath = "fal-ai/veo3.1/fast/image-to-video";
+  const base = `https://queue.fal.run/${queuePath}/requests/${id}`;
+  const urls: string[] = [];
+  const fetcher: typeof fetch = async (url, init) => {
+    urls.push(String(url));
+    if (init?.method === "POST") return Response.json({ request_id: id,
+      status_url: `${base}/status`, response_url: `${base}/response` });
+    if (String(url).endsWith("/status?logs=0")) return Response.json({
+      request_id: id, status: "COMPLETED" });
+    return Response.json({ video: { url: "https://cdn.example/clip.mp4" } });
+  };
+  const submitted = await submitFalTask({ endpoint: queuePath,
+    input: { prompt: "a clip" }, apiKey: "key", fetcher });
+  assert.deepEqual(decodeFalQueueReference(submitted.queueReference!), {
+    requestId: id, queuePath, resultSuffix: "/response"
+  });
+  const task = await getFalTask({ endpoint: queuePath, requestId: id,
+    queueReference: submitted.queueReference!, apiKey: "key", fetcher });
+  const result = await getFalResult({ endpoint: queuePath, requestId: id,
+    queueReference: submitted.queueReference!, apiKey: "key", fetcher });
+  assert.equal(task.state, "completed");
+  assert.deepEqual(urls.slice(1), [`${base}/status?logs=0`, `${base}/response`]);
+  assert.equal(result.outputs[0]?.url, "https://cdn.example/clip.mp4");
+});
+
+test("fal rejects cross-host or mismatched lifecycle URLs after an accepted POST", async () => {
+  for (const responseUrl of [
+    "https://evil.example/requests/req_123/response",
+    "https://queue.fal.run/fal-ai/veo3.1/requests/another/response"
+  ]) {
+    const fetcher: typeof fetch = async () => Response.json({ request_id: "req_123",
+      status_url: "https://queue.fal.run/fal-ai/veo3.1/requests/req_123/status",
+      response_url: responseUrl });
+    await assert.rejects(submitFalTask({ endpoint: "fal-ai/veo3.1/fast", input: { prompt: "x" },
+      apiKey: "key", fetcher }), (error: unknown) =>
+      error instanceof FalError && error.kind === "uncertain_submission");
+  }
 });
 
 test("fal status maps queue, completion and redacts provider failure detail", async () => {

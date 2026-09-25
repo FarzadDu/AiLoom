@@ -19,11 +19,12 @@
 .card h2, .listSection h2 { margin: 0 0 24px; font-size: 24px; font-weight: 650; letter-spacing: -.035em; }
 .card form { display: grid; gap: 11px; }
 .card label, .listSection label { margin-top: 10px; color: var(--secondary); font-size: 13px; font-weight: 700; }
-.card input, .card select, .card textarea, .listSection input { display: block; width: 100%; min-height: 46px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 10px; outline: none; background: var(--surface-soft); color: var(--ink); font-size: 15px; }
+.card input, .card textarea, .listSection input { display: block; width: 100%; min-height: 46px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 10px; outline: none; background: var(--surface-soft); color: var(--ink); font-size: 15px; }
+.card :global(.ailoom-select-trigger) { min-height: 46px; font-size: 15px; }
 .card input[type="file"] { max-width: 100%; }
 .card input[type="range"] { padding-inline: 0; }
 .card textarea { min-height: 140px; resize: vertical; line-height: 1.7; }
-.card input:focus, .card select:focus, .card textarea:focus, .listSection input:focus { border-color: var(--accent); }
+.card input:focus, .card textarea:focus, .listSection input:focus { border-color: var(--accent); }
 .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .row label { display: block; margin-bottom: 8px; }
 .hint { margin: 2px 0 8px; color: var(--muted); font-size: 13px; line-height: 1.65; }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parsePendingChatTurn, samePendingTurn, type PendingChatTurn } from "../src/components/chat-turn-idempotency";
+import { parsePendingChatTurn, reconcileCompletedChatTurn, samePendingTurn, type PendingChatTurn } from "../src/components/chat-turn-idempotency";
 
 const requestId = "8a3c765a-945b-4f52-b8e3-98962051f975";
 const pending: PendingChatTurn = {
@@ -25,4 +25,28 @@ test("pending turn records validate the request key and input", () => {
   assert.deepEqual(parsePendingChatTurn(JSON.stringify(pending)), pending);
   assert.equal(parsePendingChatTurn(JSON.stringify({ ...pending, requestId: "bad" })), null);
   assert.equal(parsePendingChatTurn(JSON.stringify({ ...pending, input: { text: "x" } })), null);
+});
+
+test("a completed prior turn cannot redirect a new chat into its old conversation", async () => {
+  const calls: string[] = [];
+  const actions = {
+    restoreOriginal: async (id: string) => { calls.push(`restore:${id}`); },
+    refreshCurrent: async (id: string) => { calls.push(`refresh:${id}`); },
+    clearPending: () => { calls.push("clear"); },
+    refreshHistory: () => { calls.push("history"); }
+  };
+  assert.equal(await reconcileCompletedChatTurn("old-chat", false, null, actions), "continue");
+  assert.deepEqual(calls, ["clear", "history"]);
+
+  calls.length = 0;
+  assert.equal(await reconcileCompletedChatTurn("old-chat", false, "new-chat", actions), "continue");
+  assert.deepEqual(calls, ["clear", "history"]);
+
+  calls.length = 0;
+  assert.equal(await reconcileCompletedChatTurn("old-chat", false, "old-chat", actions), "continue");
+  assert.deepEqual(calls, ["refresh:old-chat", "clear", "history"]);
+
+  calls.length = 0;
+  assert.equal(await reconcileCompletedChatTurn("old-chat", true, "new-chat", actions), "replayed");
+  assert.deepEqual(calls, ["restore:old-chat"]);
 });

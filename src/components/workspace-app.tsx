@@ -47,7 +47,11 @@ import { repairRequestIdentity } from "./repair-request";
 import { InpaintCanvas } from "./inpaint-canvas";
 import { ChatVoiceInput } from "./chat-voice-input";
 import { generationRequestIdentity, parsePendingGeneration } from "./generation-idempotency";
-import { parsePendingChatTurn, samePendingTurn, type ChatTurnInput, type PendingChatTurn } from "./chat-turn-idempotency";
+import { parsePendingChatTurn, reconcileCompletedChatTurn, samePendingTurn, type ChatTurnInput, type PendingChatTurn } from "./chat-turn-idempotency";
+import { specialistChatTransition, type SpecialistChatId } from "./specialist-chat";
+import { captureChatContext } from "./chat-context-lease";
+import { ThemedSelect } from "./themed-select";
+import { retainImageReferenceOnModeChange, usableReference } from "./media-reference";
 
 type Models = Record<View, string>;
 type LocalFile = { name: string; mime: string; url: string; file?: File; assetId?: string };
@@ -311,11 +315,11 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId
         <div className="history-user"><span className="user-avatar" aria-hidden="true">{(user.name?.trim()[0] || user.email[0] || "A").toUpperCase()}</span><span><strong>{user.name || user.email}</strong><small>{user.email}</small></span></div>
       </aside>
       <div className="chat-main">
-        <div className="chat-main-header"><span><MessageCircle size={19} aria-hidden="true" /><strong>{activeTitle}</strong></span><div className="chat-main-meta"><label className="chat-project-picker"><FolderClosed size={15} aria-hidden="true" /><select aria-label={locale === "fa" ? "پروژهٔ گفتگو" : "Conversation project"} value={selectedProjectId ?? ""} disabled={projectBusy || pending} onChange={event => {
-          const projectId = event.target.value || null;
+        <div className="chat-main-header"><span><MessageCircle size={19} aria-hidden="true" /><strong>{activeTitle}</strong></span><div className="chat-main-meta"><div className="chat-project-picker"><FolderClosed size={15} aria-hidden="true" /><ThemedSelect ariaLabel={locale === "fa" ? "پروژهٔ گفتگو" : "Conversation project"} value={selectedProjectId ?? ""} disabled={projectBusy || pending} onValueChange={value => {
+          const projectId = value || null;
           if (selectedId) onMoveConversation(selectedId, projectId);
           else onSelectProject(projectId);
-        }}><option value="">{projectLabel(locale, null)}</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><span className="chat-model-badge">{modelList.find(item => item.id === model)?.name ?? t.smartChoice}</span></div></div>
+        }}><option value="">{projectLabel(locale, null)}</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</ThemedSelect></div><span className="chat-model-badge">{modelList.find(item => item.id === model)?.name ?? t.smartChoice}</span></div></div>
         {activeProject?.description && <div className="chat-project-note" title={locale === "fa" ? "در چت متنی برای OpenRouter ارسال می‌شود" : "Sent to OpenRouter in text chats"}><FolderClosed size={14} aria-hidden="true" /><span>{activeProject.description}</span></div>}
         <div className="messages-area" role="log" aria-live="polite" aria-label={t.nav.chat}>
           {messageLoading ? <div className="chat-empty"><p>{t.loadingMessages}</p></div>
@@ -338,7 +342,7 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId
         <div className="chat-compose-wrap">
           {error && <div className="chat-error" role="alert">{error}{showSeparateRequest && <button type="button" onClick={onSeparateRequest}>{locale === "fa" ? "شروع درخواست جداگانه" : "Start a separate request"}</button>}</div>}
           {previousRequestId && <a className="chat-previous-request" href={`/api/chat?requestId=${encodeURIComponent(previousRequestId)}`} target="_blank" rel="noopener noreferrer">{locale === "fa" ? "بررسی وضعیت درخواست قبلی" : "Check previous request status"}</a>}
-          <ChatComposer locale={locale} prompt={prompt} onPrompt={onPrompt} model={model} onModel={onModel} modelList={modelList} mode={mode} onMode={onMode} webSearch={webSearch} onWebSearch={onWebSearch} onSubmit={onSend} attachment={attachment} onAttach={onAttach} onRemoveAttachment={onRemoveAttachment} inputRef={inputRef} compact disabled={pending} voiceEnabled />
+          <ChatComposer locale={locale} prompt={prompt} onPrompt={onPrompt} model={model} onModel={onModel} modelList={modelList} mode={mode} onMode={onMode} webSearch={webSearch} onWebSearch={onWebSearch} onSubmit={onSend} attachment={attachment} onAttach={onAttach} onRemoveAttachment={onRemoveAttachment} inputRef={inputRef} compact disabled={pending || messageLoading} voiceEnabled />
           <p className="chat-compose-note">{t.draftSaved}</p>
         </div>
       </div>
@@ -346,9 +350,10 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId
   );
 }
 
-function GeneratedResult({ asset, locale, initialVisibility, onVisibilityChange }: {
+function GeneratedResult({ asset, locale, initialVisibility, onVisibilityChange, onUseReference }: {
   asset: MediaAsset; locale: Locale; initialVisibility?: "public" | "private";
   onVisibilityChange?: (visibility: "public" | "private") => void;
+  onUseReference?: (asset: MediaAsset) => void;
 }) {
   const t = copy[locale];
   const [visibility, setVisibility] = useState<"public" | "private" | null>(initialVisibility ?? null);
@@ -391,6 +396,7 @@ function GeneratedResult({ asset, locale, initialVisibility, onVisibilityChange 
     {asset.kind === "image" ? <img src={asset.url} alt={t.imageOutput} /> : asset.kind === "video" ? <video src={asset.url} controls /> : asset.kind === "audio" ? <audio src={asset.url} controls /> : null}
     <div className="result-actions"><a href={asset.url} target="_blank" rel="noreferrer">{t.openResult}<ArrowRight size={15} aria-hidden="true" /></a>
       {asset.id && <a href={asset.url} download={mediaDownloadName(asset)}><Download size={15} aria-hidden="true" />{t.downloadResult}</a>}
+      {asset.id && (asset.kind === "image" || asset.kind === "video") && onUseReference && <button className="result-reference" type="button" onClick={() => onUseReference(asset)}>{asset.kind === "image" ? <ImageIcon size={15} aria-hidden="true" /> : <Scissors size={15} aria-hidden="true" />}{asset.kind === "image" ? locale === "fa" ? "استفاده به‌عنوان مرجع" : "Use as reference" : locale === "fa" ? "استفاده برای ترمیم" : "Use for repair"}</button>}
       {asset.id && <div className="asset-visibility"><span role="status"><ShieldCheck size={15} aria-hidden="true" />{visibility === null ? error ? t.assetVisibilityUnavailable : t.assetVisibilityLoading : visibility === "public" ? t.assetPublic : t.assetPrivate}</span>{visibility !== null ? <button type="button" disabled={saving} onClick={() => void changeVisibility()}>{saving ? t.assetVisibilitySaving : visibility === "public" ? t.makePrivate : t.makePublic}</button> : error && <button type="button" onClick={() => setRefreshKey(previous => previous + 1)}>{t.retry}</button>}</div>}
     </div>
     {error && <p className="result-error" role="alert">{error}</p>}
@@ -508,7 +514,7 @@ function TranscriptionPanel({ locale, signedIn, onLogin }: { locale: Locale; sig
         <p className="transcription-file-hint">{t.transcriptionDescription}</p>
         <div className="inspector-divider" />
         <div className="inspector-heading subtle"><span>{t.settings}</span></div>
-        <div className="form-field"><label htmlFor="transcription-language">{t.language}</label><div className="select-shell"><select id="transcription-language" value={language} onChange={event => setLanguage(event.target.value)} disabled={pending}><option value="auto">{t.automatic}</option><option value="en">{t.english}</option><option value="fa">{t.persian}</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>
+        <div className="form-field"><label htmlFor="transcription-language">{t.language}</label><div className="select-shell"><ThemedSelect id="transcription-language" value={language} onValueChange={setLanguage} disabled={pending}><option value="auto">{t.automatic}</option><option value="en">{t.english}</option><option value="fa">{t.persian}</option></ThemedSelect></div></div>
         <label className="toggle-field"><input type="checkbox" checked={diarize} onChange={event => setDiarize(event.target.checked)} disabled={pending} /><span>{t.transcriptionDiarize}</span></label>
         <div className="inspector-spacer" />
         <button className="primary-action" type="button" onClick={() => void transcribe()} disabled={pending}>{pending ? t.transcriptionWorking : t.transcriptionAction}<ArrowRight size={17} aria-hidden="true" /></button>
@@ -523,12 +529,14 @@ function TranscriptionPanel({ locale, signedIn, onLogin }: { locale: Locale; sig
   </>;
 }
 
-function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, preview, onFile, onRemoveFile, onLastFrameChange, availableModels, job, jobError, busy, initialMode, signedIn, onLogin }: {
+function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, preview, onFile, onRemoveFile, onUseReference, onLastFrameChange, availableModels, job, jobError, busy, initialMode, signedIn, onLogin, projects, projectId, onProjectChange }: {
   view: MediaView; locale: Locale; model: string; onModel: (value: string) => void;
   draft: string; onDraft: (value: string) => void; onSubmit: (options: StudioRequestOptions) => void;
   preview: LocalFile | null; onFile: (event: ChangeEvent<HTMLInputElement>) => void; onRemoveFile: () => void;
+  onUseReference: (reference: LocalFile) => void;
   onLastFrameChange: () => void;
   availableModels: MediaModel[]; job: MediaJob | null; jobError: string; busy: boolean; initialMode: number; signedIn: boolean; onLogin: () => void;
+  projects: ChatProject[]; projectId: string | null; onProjectChange: (id: string | null) => void;
 }) {
   const t = copy[locale];
   const [activeMode, setActiveMode] = useState(initialMode);
@@ -660,6 +668,31 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
       block: "start"
     }));
   };
+  const useOutputAsReference = async (asset: MediaAsset) => {
+    if (!asset.id || asset.kind !== view || (view !== "image" && view !== "video")) return;
+    setLastFrameError("");
+    try {
+      const matching = library.find(item => item.id === asset.id);
+      let mime = asset.contentType || matching?.mimeType || "";
+      const url = `/api/assets/${encodeURIComponent(asset.id)}`;
+      if (!mime) {
+        const response = await fetch(url, { credentials: "same-origin", cache: "no-store", headers: { Range: "bytes=0-0" } });
+        if (!response.ok) throw new Error(await responseError(response));
+        mime = response.headers.get("content-type")?.split(";")[0]?.trim() || "";
+        await response.body?.cancel();
+      }
+      const allowed = view === "image" ? ["image/png", "image/jpeg", "image/webp"] : ["video/mp4", "video/webm"];
+      if (!allowed.includes(mime)) throw new Error(t.unsupportedOperation);
+      onUseReference({ name: mediaDownloadName({ ...asset, contentType: mime }), mime, url, assetId: asset.id });
+      setSelectedAssetId(null);
+      setActiveMode(view === "image" ? 1 : 2);
+      setInpaintMask(null);
+      setShowCharacterOutput(false);
+      setLastFrame(null);
+      onLastFrameChange();
+      window.requestAnimationFrame(() => canvasRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    } catch (error) { setLastFrameError(error instanceof Error ? error.message : t.unsupportedOperation); }
+  };
   const accept = view === "image" && activeMode === 3 ? "image/png,image/jpeg"
     : view === "image" || view === "video" && (activeMode === 1 || activeMode === 3) ? "image/png,image/jpeg,image/webp" : view === "video" ? "video/mp4,video/webm" : "";
   const showRepair = view === "video" && activeMode === 2;
@@ -678,14 +711,12 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
     if (showInpaint && !preview) { fileRef.current?.click(); return; }
     if (showCharacter && !preview) { fileRef.current?.click(); return; }
     if (!showUpscale && !draft.trim()) { promptRef.current?.focus(); return; }
-    if (showInpaint && (!preview?.file || !["image/png", "image/jpeg"].includes(preview.file.type) ||
-      preview.file.size === 0 || preview.file.size > 8_000_000)) {
+    if (showInpaint && !usableReference(preview, ["image/png", "image/jpeg"], 8_000_000)) {
       setLastFrameError(t.inpaintInvalid);
       return;
     }
     if (showInpaint && !inpaintMask) { setLastFrameError(t.inpaintMissing); return; }
-    if (showCharacter && (!preview?.file || !["image/png", "image/jpeg", "image/webp"].includes(preview.file.type) ||
-      preview.file.size === 0 || preview.file.size > 10_000_000)) {
+    if (showCharacter && !usableReference(preview, ["image/png", "image/jpeg", "image/webp"], 10_000_000)) {
       setLastFrameError(t.characterInvalid);
       return;
     }
@@ -732,7 +763,7 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   return (
     <section className="studio-page" aria-labelledby="studio-title">
       <div className="workspace-heading"><div><span className="section-eyebrow">{t.studioEyebrow}</span><h1 id="studio-title">{t.studioTitle[view]}</h1><p>{t.studioDescription[view]}</p></div><span className="page-indicator"><CurrentIcon size={18} aria-hidden="true" />{t.nav[view]}</span></div>
-      <div className="studio-tabs" ref={tabsRef} role="group" aria-label={t.studioTitle[view]}>{tabs.map((name, index) => <button type="button" key={name} aria-pressed={activeMode === index} onClick={() => { if (index !== activeMode) { setActiveMode(index); setInpaintMask(null); setLastFrame(null); onLastFrameChange(); setLastFrameError(""); onRemoveFile(); } }}>{name}</button>)}</div>
+      <div className="studio-tabs" ref={tabsRef} role="group" aria-label={t.studioTitle[view]}>{tabs.map((name, index) => <button type="button" key={name} aria-pressed={activeMode === index} onClick={() => { if (index !== activeMode) { setActiveMode(index); setInpaintMask(null); setLastFrame(null); setShowCharacterOutput(false); onLastFrameChange(); setLastFrameError(""); if (!retainImageReferenceOnModeChange(view, index, preview)) onRemoveFile(); } }}>{name}</button>)}</div>
       {view === "image" && <div className="studio-tool-links"><a href="/image/editor">{t.layersTool}<ArrowRight size={15} aria-hidden="true" /></a><a href="/lora">{t.loraTool}<ArrowRight size={15} aria-hidden="true" /></a></div>}
       {view === "video" && <div className="studio-tool-links"><a href="/storyboards">{t.storyboardTool}<ArrowRight size={15} aria-hidden="true" /></a><a href="/video/captions">{t.captionsTool}<ArrowRight size={15} aria-hidden="true" /></a></div>}
       {view === "audio" && <div className="studio-tool-links"><a href="/audio/voices">{t.voicesTool}<ArrowRight size={15} aria-hidden="true" /></a><a href="/audio/dubbing">{t.dubbingTool}<ArrowRight size={15} aria-hidden="true" /></a><a href="/audio/effects">{t.effectsTool}<ArrowRight size={15} aria-hidden="true" /></a></div>}
@@ -741,13 +772,13 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
         <div className="canvas-column" ref={canvasRef}>
           <div className="canvas-top"><strong>{t.canvas}</strong>{selectedAsset ? <button type="button" className="canvas-return" onClick={() => setSelectedAssetId(null)}>{t.mediaLibraryBack}</button> : <span>{preview ? t.localPreview : t.canvasReady}</span>}</div>
           <div className={`studio-canvas studio-canvas-${view}`}>
-            {selectedAsset ? <div className="generated-results"><GeneratedResult key={selectedAsset.id} asset={shownAssets[0]} locale={locale} initialVisibility={selectedAsset.visibility} onVisibilityChange={visibility => onVisibilityChange(selectedAsset.id, visibility)} /></div>
+            {selectedAsset ? <div className="generated-results"><GeneratedResult key={selectedAsset.id} asset={shownAssets[0]} locale={locale} initialVisibility={selectedAsset.visibility} onVisibilityChange={visibility => onVisibilityChange(selectedAsset.id, visibility)} onUseReference={view === "image" || view === "video" ? asset => void useOutputAsReference(asset) : undefined} /></div>
               : showFirstLast && (preview || lastFrame) ? <div className="frame-pair"><div className="frame-card"><strong>{t.firstFrame}</strong>{preview?.mime.startsWith("image/") ? <img src={preview.url} alt={preview.name} /> : <button type="button" onClick={() => fileRef.current?.click()}>{t.chooseFirstFrame}</button>}</div><div className="frame-card"><strong>{t.lastFrame}</strong>{lastFrame ? <img src={lastFrame.url} alt={lastFrame.name} /> : <button type="button" onClick={() => lastFrameRef.current?.click()}>{t.chooseLastFrame}</button>}</div></div>
               : preview && !(showCharacter && showCharacterOutput && displayJob) ? (showInpaint && ["image/png", "image/jpeg"].includes(preview.mime) ? <InpaintCanvas key={preview.url} src={preview.url} alt={preview.name}
                   labels={{ brush: t.inpaintBrush, clear: t.inpaintClear, hint: t.inpaintHint, invalid: t.inpaintInvalid }}
                   onMaskChange={setInpaintMask} />
                 : (view === "image" || view === "video" && activeMode === 1) && preview.mime.startsWith("image/") ? <img className="uploaded-media" src={preview.url} alt={preview.name} /> : view === "video" && preview.mime.startsWith("video/") ? <video className="uploaded-media" src={preview.url} controls onLoadedMetadata={event => handleMetadata(event.currentTarget.duration)} /> : null)
-              : displayJob?.state === "succeeded" && shownAssets.length ? <div className="generated-results">{shownAssets.map((asset, index) => <GeneratedResult asset={asset} locale={locale} onVisibilityChange={asset.id ? visibility => onVisibilityChange(asset.id!, visibility) : undefined} key={asset.id ?? asset.url + index} />)}</div>
+              : displayJob?.state === "succeeded" && shownAssets.length ? <div className="generated-results">{shownAssets.map((asset, index) => <GeneratedResult asset={asset} locale={locale} onVisibilityChange={asset.id ? visibility => onVisibilityChange(asset.id!, visibility) : undefined} onUseReference={view === "image" || view === "video" ? item => void useOutputAsReference(item) : undefined} key={asset.id ?? asset.url + index} />)}</div>
               : displayJob?.state === "succeeded" ? <div className="job-status"><Check size={27} aria-hidden="true" /><strong>{t.generationDone}</strong><p>{t.generationOutputMissing}</p></div>
               : displayJob && ["queued", "submitting", "running"].includes(displayJob.state) ? <div className="job-status"><span className="job-spinner" aria-hidden="true" /><strong>{displayJob.state === "running" ? t.generationRunning : t.generationQueued}</strong><p>{t.generationHint}</p></div>
               : displayJob?.state === "failed" ? <div className="job-status"><X size={27} aria-hidden="true" /><strong>{t.generationFailed}</strong><p>{displayJob.errorCode || jobError}</p></div>
@@ -777,18 +808,19 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
           <textarea id="studio-prompt" ref={promptRef} className="studio-prompt" dir={directionForText(draft, locale)} value={draft} onChange={event => onDraft(event.target.value)} placeholder={view === "audio" && activeMode === 1 ? t.musicPrompt : t.promptByView[view]} rows={5} /></>}
           <div className="inspector-divider" />
           <div className="inspector-heading subtle"><span>{t.settings}</span></div>
-          <div className="form-field"><label htmlFor="studio-model">{t.model}</label><div className="select-shell"><select id="studio-model" value={effectiveModel} onChange={event => onModel(event.target.value)} disabled={!selectModels.length}>{selectModels.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</select><ChevronDown size={16} aria-hidden="true" /></div></div>
-           {view !== "audio" && !showUpscale && !showInpaint && effectiveModel !== "nano-banana-2" && <div className="form-field"><label htmlFor="aspect-ratio">{t.aspectRatio}</label><div className="select-shell"><select id="aspect-ratio" value={view === "video" && !seedance ? aspect === "9:16" ? "9:16" : "16:9" : aspect} onChange={event => setAspect(event.target.value)}>{seedance && <option value="auto">{t.automatic}</option>}{seedance && <option value="21:9">21:9</option>}<option value="16:9">16:9</option>{(view === "image" || seedance) && <option value="1:1">1:1</option>}{(view === "image" || seedance) && <option value="4:3">4:3</option>}{seedance && <option value="3:4">3:4</option>}<option value="9:16">9:16</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
-           {!showUpscale && !showInpaint && (view === "video" && !showRepair || view === "image" && effectiveModel !== "nano-banana-2") && <div className="form-field"><label htmlFor="media-quality">{t.quality}</label><div className="select-shell"><select id="media-quality" value={seedance ? quality : quality === "low" ? "standard" : quality} onChange={event => setQuality(event.target.value)}>{seedance && <option value="low">480p</option>}<option value="standard">{seedance ? "720p" : t.standard}</option><option value="high">{seedance ? "1080p" : t.high}</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
+          <div className="form-field"><label htmlFor="studio-project">{locale === "fa" ? "پروژه" : "Project"}</label><div className="select-shell"><ThemedSelect id="studio-project" value={projectId ?? ""} onValueChange={value => onProjectChange(value || null)} disabled={busy}><option value="">{locale === "fa" ? "بدون پروژه" : "No project"}</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</ThemedSelect></div></div>
+          <div className="form-field"><label htmlFor="studio-model">{t.model}</label><div className="select-shell"><ThemedSelect id="studio-model" value={effectiveModel} onValueChange={onModel} disabled={!selectModels.length}>{selectModels.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</ThemedSelect></div></div>
+           {view !== "audio" && !showUpscale && !showInpaint && effectiveModel !== "nano-banana-2" && <div className="form-field"><label htmlFor="aspect-ratio">{t.aspectRatio}</label><div className="select-shell"><ThemedSelect id="aspect-ratio" value={view === "video" && !seedance ? aspect === "9:16" ? "9:16" : "16:9" : aspect} onValueChange={setAspect}>{seedance && <option value="auto">{t.automatic}</option>}{seedance && <option value="21:9">21:9</option>}<option value="16:9">16:9</option>{(view === "image" || seedance) && <option value="1:1">1:1</option>}{(view === "image" || seedance) && <option value="4:3">4:3</option>}{seedance && <option value="3:4">3:4</option>}<option value="9:16">9:16</option></ThemedSelect></div></div>}
+           {!showUpscale && !showInpaint && (view === "video" && !showRepair || view === "image" && effectiveModel !== "nano-banana-2") && <div className="form-field"><label htmlFor="media-quality">{t.quality}</label><div className="select-shell"><ThemedSelect id="media-quality" value={seedance ? quality : quality === "low" ? "standard" : quality} onValueChange={setQuality}>{seedance && <option value="low">480p</option>}<option value="standard">{seedance ? "720p" : t.standard}</option><option value="high">{seedance ? "1080p" : t.high}</option></ThemedSelect></div></div>}
           {showUpscale && <>
-            <div className="form-field"><label htmlFor="upscale-factor">{t.upscaleFactor}</label><div className="select-shell"><select id="upscale-factor" value={upscaleFactor} onChange={event => setUpscaleFactor(Number(event.target.value) as 2 | 4)}><option value={2}>2×</option><option value={4}>4×</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>
-            <div className="form-field"><label htmlFor="upscale-preset">{t.upscalePreset}</label><div className="select-shell"><select id="upscale-preset" value={upscalePreset} onChange={event => setUpscalePreset(event.target.value as UpscalePreset)}>{upscalePresets.map(preset => <option value={preset} key={preset}>{preset}</option>)}</select><ChevronDown size={16} aria-hidden="true" /></div></div>
-            <div className="form-field"><label htmlFor="upscale-format">{t.upscaleFormat}</label><div className="select-shell"><select id="upscale-format" value={upscaleFormat} onChange={event => setUpscaleFormat(event.target.value as "jpeg" | "png")}><option value="jpeg">JPEG</option><option value="png">PNG</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>
+            <div className="form-field"><label htmlFor="upscale-factor">{t.upscaleFactor}</label><div className="select-shell"><ThemedSelect id="upscale-factor" value={upscaleFactor} onValueChange={value => setUpscaleFactor(Number(value) as 2 | 4)}><option value={2}>2×</option><option value={4}>4×</option></ThemedSelect></div></div>
+            <div className="form-field"><label htmlFor="upscale-preset">{t.upscalePreset}</label><div className="select-shell"><ThemedSelect id="upscale-preset" value={upscalePreset} onValueChange={value => setUpscalePreset(value as UpscalePreset)}>{upscalePresets.map(preset => <option value={preset} key={preset}>{preset}</option>)}</ThemedSelect></div></div>
+            <div className="form-field"><label htmlFor="upscale-format">{t.upscaleFormat}</label><div className="select-shell"><ThemedSelect id="upscale-format" value={upscaleFormat} onValueChange={value => setUpscaleFormat(value as "jpeg" | "png")}><option value="jpeg">JPEG</option><option value="png">PNG</option></ThemedSelect></div></div>
           </>}
-           {view === "video" && !showRepair && <div className="form-field"><label htmlFor="video-duration">{t.duration}</label><div className="select-shell"><select id="video-duration" value={seedance ? duration : typeof duration === "number" && [4, 6, 8].includes(duration) ? duration : 8} onChange={event => setDuration(event.target.value === "auto" ? "auto" : Number(event.target.value))}>{seedance && <option value="auto">{t.automaticDuration}</option>}{(seedance ? [4, 6, 8, 10, 15, 20, 30] : [4, 6, 8]).map(value => <option key={value} value={value}>{value} {t.seconds}</option>)}</select><ChevronDown size={16} aria-hidden="true" /></div></div>}
+           {view === "video" && !showRepair && <div className="form-field"><label htmlFor="video-duration">{t.duration}</label><div className="select-shell"><ThemedSelect id="video-duration" value={seedance ? duration : typeof duration === "number" && [4, 6, 8].includes(duration) ? duration : 8} onValueChange={value => setDuration(value === "auto" ? "auto" : Number(value))}>{seedance && <option value="auto">{t.automaticDuration}</option>}{(seedance ? [4, 6, 8, 10, 15, 20, 30] : [4, 6, 8]).map(value => <option key={value} value={value}>{value} {t.seconds}</option>)}</ThemedSelect></div></div>}
            {view === "video" && !showRepair && <label className="toggle-field"><input type="checkbox" checked={generateAudio} onChange={event => setGenerateAudio(event.target.checked)} /><span>{t.videoAudio}</span></label>}
-          {view === "audio" && activeMode === 0 && <div className="form-field"><label htmlFor="audio-language">{t.language}</label><div className="select-shell"><select id="audio-language" value={language} onChange={event => setLanguage(event.target.value)}><option value="auto">{t.automatic}</option><option value="en">{t.english}</option><option value="fa">{t.persian}</option></select><ChevronDown size={16} aria-hidden="true" /></div></div>}
-          {view === "audio" && activeMode === 1 && <div className="form-field"><label htmlFor="music-duration">{t.duration}</label><div className="select-shell"><select id="music-duration" value={effectiveMusicDuration} onChange={event => setMusicDurationSec(Number(event.target.value))}>{[15, 30, 60, 120, ...(effectiveModel === "elevenlabs/music/v2" ? [180, 300] : [])].map(value => <option key={value} value={value}>{value} {t.seconds}</option>)}</select><ChevronDown size={16} aria-hidden="true" /></div></div>}
+          {view === "audio" && activeMode === 0 && <div className="form-field"><label htmlFor="audio-language">{t.language}</label><div className="select-shell"><ThemedSelect id="audio-language" value={language} onValueChange={setLanguage}><option value="auto">{t.automatic}</option><option value="en">{t.english}</option><option value="fa">{t.persian}</option></ThemedSelect></div></div>}
+          {view === "audio" && activeMode === 1 && <div className="form-field"><label htmlFor="music-duration">{t.duration}</label><div className="select-shell"><ThemedSelect id="music-duration" value={effectiveMusicDuration} onValueChange={value => setMusicDurationSec(Number(value))}>{[15, 30, 60, 120, ...(effectiveModel === "elevenlabs/music/v2" ? [180, 300] : [])].map(value => <option key={value} value={value}>{value} {t.seconds}</option>)}</ThemedSelect></div></div>}
           {view === "audio" && activeMode === 1 && effectiveModel === "elevenlabs/music/v2" && <label className="toggle-field"><input type="checkbox" checked={forceInstrumental} onChange={event => setForceInstrumental(event.target.checked)} /><span>{t.musicInstrumental}</span></label>}
           {showRepair && <div className="repair-controls"><div className="repair-title"><Scissors size={17} aria-hidden="true" /><strong>{t.repairRange}</strong></div><p>{preview ? t.repairHint : t.noClip}</p><div className="repair-fields"><div className="form-field"><label htmlFor="repair-start">{t.startTime}</label><div className="input-suffix"><input id="repair-start" type="number" min={0} max={Math.max(0, repairEnd - 1)} step={0.1} value={repairStart} onChange={event => setRepairStart(Math.max(0, Math.min(repairEnd - .1, Number(event.target.value) || 0)))} /><span>s</span></div></div><div className="form-field"><label htmlFor="repair-end">{t.endTime}</label><div className="input-suffix"><input id="repair-end" type="number" min={repairStart + .1} max={clipDuration} step={0.1} value={repairEnd} onChange={event => setRepairEnd(Math.min(clipDuration, Math.max(repairStart + .1, Number(event.target.value) || repairStart + .1)))} /><span>s</span></div></div></div></div>}
           <div className="inspector-spacer" />
@@ -902,6 +934,7 @@ export default function WorkspaceApp() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [projects, setProjects] = useState<ChatProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [mediaProjectId, setMediaProjectId] = useState<string | null>(null);
   const [projectBusy, setProjectBusy] = useState(false);
   const [projectError, setProjectError] = useState("");
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -911,7 +944,7 @@ export default function WorkspaceApp() {
   const [chatError, setChatError] = useState("");
   const [chatNeedsDecision, setChatNeedsDecision] = useState(false);
   const [chatPreviousRequestId, setChatPreviousRequestId] = useState<string | null>(null);
-  const [specialistId, setSpecialistId] = useState<"general" | "skin" | "mental" | "general-health" | "skin-and-hair" | "mental-wellbeing" | null>(null);
+  const [specialistId, setSpecialistId] = useState<SpecialistChatId | null>(null);
   const [mediaModels, setMediaModels] = useState<MediaModel[]>([]);
   const [mediaJobs, setMediaJobs] = useState<Partial<Record<MediaView, MediaJob>>>({});
   const [mediaErrors, setMediaErrors] = useState<Partial<Record<MediaView, string>>>({});
@@ -1091,6 +1124,12 @@ export default function WorkspaceApp() {
     navigate(nextView);
     const file = options?.file;
     if (nextView === "chat") {
+      if (pendingRef.current) {
+        conversationLoadEpochRef.current++;
+        setSelectedConversationId(null);
+        setMessages([]);
+        setSpecialistId(null);
+      }
       setChatMode("text");
       if (options?.modelId) updateModel("chat", options.modelId);
       if (file) setAttachment({ name: file.name, mime: file.type, file, url: URL.createObjectURL(file) });
@@ -1112,8 +1151,14 @@ export default function WorkspaceApp() {
     }
   };
   const askSpecialist = (id: string, prompt: string) => {
-    if (id === "general" || id === "skin" || id === "mental" || id === "general-health" || id === "skin-and-hair" || id === "mental-wellbeing") setSpecialistId(id);
-    setSelectedConversationId(null);
+    const transition = specialistChatTransition(id);
+    conversationLoadEpochRef.current++;
+    conversationLoadAbortRef.current?.abort();
+    conversationLoadAbortRef.current = null;
+    setMessagesLoading(false);
+    setChatMode(transition.mode);
+    setSpecialistId(transition.specialistId);
+    setSelectedConversationId(transition.conversationId);
     setMessages([]);
     updateDraft("chat", prompt);
     navigate("chat");
@@ -1152,8 +1197,11 @@ export default function WorkspaceApp() {
   }, [user, refreshConversations]);
   useEffect(() => {
     if (user) void refreshProjects();
-    else { setProjects([]); setSelectedProjectId(null); setProjectError(""); }
+    else { setProjects([]); setSelectedProjectId(null); setMediaProjectId(null); setProjectError(""); }
   }, [user, refreshProjects]);
+  useEffect(() => {
+    if (mediaProjectId && !projects.some(project => project.id === mediaProjectId)) setMediaProjectId(null);
+  }, [projects, mediaProjectId]);
   useEffect(() => {
     if (!user) { setChatPreviousRequestId(null); return; }
     try { setChatPreviousRequestId(window.sessionStorage.getItem(`ailoom.chatTextPrevious.${user.id}`)); }
@@ -1368,7 +1416,7 @@ export default function WorkspaceApp() {
   };
 
   const sendChatImage = async () => {
-    if (pendingRef.current) return;
+    if (pendingRef.current || messagesLoading || conversationLoadAbortRef.current) return;
     const prompt = drafts.chat.trim();
     if (!prompt) { promptRef.current?.focus(); return; }
     if (!user) { openLogin(prompt, "chat"); return; }
@@ -1382,6 +1430,7 @@ export default function WorkspaceApp() {
     const assistantId = `local-assistant-${crypto.randomUUID()}`;
     const initialConversationId = selectedConversationId;
     const initialProjectId = selectedProjectId;
+    const context = captureChatContext(() => conversationLoadEpochRef.current);
     pendingRef.current = true;
     setChatPending(true);
     setChatError("");
@@ -1451,18 +1500,22 @@ export default function WorkspaceApp() {
           return typeof value.id === "string" && typeof value.url === "string";
         }).map((item: { id: string; url: string }) => ({ type: "image" as const, assetId: item.id, url: item.url }))
       };
-      setSelectedConversationId(conversationId);
-      setMessages(previous => previous.map(item => item.id === userId
-        ? { ...item, blocks: assetId ? [{ type: "image" as const, assetId, alt: attachment?.name }] : [] }
-        : item.id === assistantId ? assistant : item));
-      updateDraft("chat", "");
-      setAttachment(null);
+      context.run(() => {
+        setSelectedConversationId(conversationId);
+        setMessages(previous => previous.map(item => item.id === userId
+          ? { ...item, blocks: assetId ? [{ type: "image" as const, assetId, alt: attachment?.name }] : [] }
+          : item.id === assistantId ? assistant : item));
+        updateDraft("chat", "");
+        setAttachment(null);
+      });
       imageRequestRef.current = null;
       try { window.sessionStorage.removeItem(pendingKey); } catch { /* Storage can be unavailable. */ }
       void refreshConversations();
     } catch (error) {
-      setMessages(previous => previous.filter(item => item.id !== userId && item.id !== assistantId));
-      setChatError(error instanceof Error ? error.message : t.generationFailed);
+      context.run(() => {
+        setMessages(previous => previous.filter(item => item.id !== userId && item.id !== assistantId));
+        setChatError(error instanceof Error ? error.message : t.generationFailed);
+      });
     } finally {
       pendingRef.current = false;
       setChatPending(false);
@@ -1471,7 +1524,7 @@ export default function WorkspaceApp() {
 
   const sendChat = async () => {
     if (chatMode === "image") { await sendChatImage(); return; }
-    if (pendingRef.current) return;
+    if (pendingRef.current || messagesLoading || conversationLoadAbortRef.current) return;
     const message = drafts.chat.trim();
     if (!message && !attachment) { promptRef.current?.focus(); return; }
     if (!user) { openLogin(message || attachment?.name || ""); return; }
@@ -1485,6 +1538,7 @@ export default function WorkspaceApp() {
     const assistantId = `local-assistant-${crypto.randomUUID()}`;
     const initialConversationId = selectedConversationId;
     const initialProjectId = selectedProjectId;
+    const context = captureChatContext(() => conversationLoadEpochRef.current);
     pendingRef.current = true;
     setChatPending(true);
     setChatError("");
@@ -1525,15 +1579,26 @@ export default function WorkspaceApp() {
         });
         if (!saved.ok) throw new Error(await responseError(saved));
         const body = await saved.json();
-        setSelectedConversationId(conversationId);
-        setSelectedProjectId(typeof body?.conversation?.projectId === "string" ? body.conversation.projectId : null);
-        setMessages(messagesFromPayload(body));
-        if (clearDraft) { updateDraft("chat", ""); setAttachment(null); }
-        setSpecialistId(null);
+        context.run(() => {
+          setSelectedConversationId(conversationId);
+          setSelectedProjectId(typeof body?.conversation?.projectId === "string" ? body.conversation.projectId : null);
+          setMessages(messagesFromPayload(body));
+          if (clearDraft) { updateDraft("chat", ""); setAttachment(null); }
+          setSpecialistId(null);
+        });
         clearPending();
         void refreshConversations();
       };
-      const inspectPending = async (record: PendingChatTurn, clearDraft: boolean): Promise<"missing" | "completed"> => {
+      const refreshCurrentConversation = async (conversationId: string) => {
+        const saved = await fetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}`, {
+          credentials: "same-origin", cache: "no-store"
+        });
+        if (!saved.ok) throw new Error(await responseError(saved));
+        const persisted = messagesFromPayload(await saved.json());
+        context.run(() => setMessages(current => [...persisted,
+          ...current.filter(item => item.id === userId || item.id === assistantId)]));
+      };
+      const inspectPending = async (record: PendingChatTurn, sameTurn: boolean): Promise<"missing" | "replayed" | "continue"> => {
         for (let poll = 0; poll <= 8; poll++) {
           const check = await fetch(`/api/chat?requestId=${encodeURIComponent(record.requestId)}`, {
             credentials: "same-origin", cache: "no-store"
@@ -1542,8 +1607,12 @@ export default function WorkspaceApp() {
           if (!check.ok) throw new Error(await responseError(check));
           const state = await check.json();
           if (state?.status === "completed" && typeof state.conversationId === "string") {
-            await restoreConversation(state.conversationId, clearDraft);
-            return "completed";
+            return reconcileCompletedChatTurn(state.conversationId, sameTurn, initialConversationId, {
+              restoreOriginal: id => restoreConversation(id, true),
+              refreshCurrent: refreshCurrentConversation,
+              clearPending,
+              refreshHistory: () => { void refreshConversations(); }
+            });
           }
           if (state?.status === "uncertain" || state?.status === "failed") {
             setChatNeedsDecision(true);
@@ -1567,8 +1636,9 @@ export default function WorkspaceApp() {
       if (pending) {
         const sameTurn = samePendingTurn(pending, candidate, initialConversationId, initialProjectId);
         const result = await inspectPending(pending, sameTurn);
-        if (result === "completed") return;
-        if (!sameTurn) clearPending();
+        if (result === "replayed") return;
+        if (result === "continue") pending = null;
+        else if (!sameTurn) { clearPending(); pending = null; }
       }
       if (!pending || !samePendingTurn(pending, candidate, initialConversationId, initialProjectId)) {
         pending = { input: candidate, requestId: crypto.randomUUID() };
@@ -1582,39 +1652,43 @@ export default function WorkspaceApp() {
         });
       } catch (error) {
         const result = await inspectPending(pending, true);
-        if (result === "completed") return;
+        if (result === "replayed") return;
         throw error;
       }
       if (!response.headers.get("Content-Type")?.includes("text/event-stream")) {
         const result = await inspectPending(pending, true);
-        if (result === "completed") return;
+        if (result === "replayed") return;
         throw new Error(response.ok ? t.sendError : await responseError(response));
       }
       try {
         await readChatStream(response, event => {
           if (event.type === "start" && event.conversationId) {
-            setSelectedConversationId(event.conversationId);
             savePending({ ...pending, resultConversationId: event.conversationId });
+            context.run(() => setSelectedConversationId(event.conversationId));
           }
-          if (event.type === "delta") setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, text: item.text + event.text } : item));
-          if (event.type === "sources") setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, blocks: [...(item.blocks?.filter(block => block.type !== "sources") ?? []), { type: "sources", sources: event.sources }] } : item));
-          if (event.type === "done") setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, id: event.messageId || assistantId, status: undefined } : item));
+          if (event.type === "delta") context.run(() => setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, text: item.text + event.text } : item)));
+          if (event.type === "sources") context.run(() => setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, blocks: [...(item.blocks?.filter(block => block.type !== "sources") ?? []), { type: "sources", sources: event.sources }] } : item)));
+          if (event.type === "done") context.run(() => setMessages(previous => previous.map(item => item.id === assistantId ? { ...item, id: event.messageId || assistantId, status: undefined } : item)));
         });
       } catch (error) {
         const result = await inspectPending(textRequestRef.current ?? pending, true);
-        if (result === "completed") return;
+        if (result === "replayed") return;
         throw error;
       }
       clearPending();
       setChatNeedsDecision(false);
-      updateDraft("chat", "");
-      if (assetId) setMessages(previous => previous.map(item => item.id === userId ? { ...item, blocks: [{ type: attachment?.mime === "application/pdf" ? "file" : "image", assetId, alt: attachment?.name }] } : item));
-      setAttachment(null);
-      setSpecialistId(null);
+      context.run(() => {
+        updateDraft("chat", "");
+        if (assetId) setMessages(previous => previous.map(item => item.id === userId ? { ...item, blocks: [{ type: attachment?.mime === "application/pdf" ? "file" : "image", assetId, alt: attachment?.name }] } : item));
+        setAttachment(null);
+        setSpecialistId(null);
+      });
       void refreshConversations();
     } catch (error) {
-      setMessages(previous => previous.filter(item => item.id !== userId && item.id !== assistantId));
-      setChatError(error instanceof Error ? error.message : t.sendError);
+      context.run(() => {
+        setMessages(previous => previous.filter(item => item.id !== userId && item.id !== assistantId));
+        setChatError(error instanceof Error ? error.message : t.sendError);
+      });
     } finally {
       pendingRef.current = false;
       setChatPending(false);
@@ -1850,18 +1924,18 @@ export default function WorkspaceApp() {
       let repairKey: string | null = null;
       if (imageEdit || imageUpscale || imageInpaint || imageCharacter || referenceVideo || videoRepair || firstLastVideo) {
         const source = preview?.file;
-        if (!source) throw new Error(t.unsupportedOperation);
-        if (imageInpaint && (!["image/png", "image/jpeg"].includes(source.type) || source.size === 0 || source.size > 8_000_000 ||
+        if (!source && !preview?.assetId) throw new Error(t.unsupportedOperation);
+        if (imageInpaint && (!usableReference(preview, ["image/png", "image/jpeg"], 8_000_000) ||
           !options.maskFile || options.maskFile.type !== "image/png" || options.maskFile.size === 0 || options.maskFile.size > 8_000_000)) throw new Error(t.inpaintInvalid);
-        if (imageCharacter && (!["image/png", "image/jpeg", "image/webp"].includes(source.type) ||
-          source.size === 0 || source.size > 10_000_000)) throw new Error(t.characterInvalid);
-        if ((imageEdit || imageUpscale || referenceVideo || firstLastVideo) && !["image/png", "image/jpeg", "image/webp"].includes(source.type)) throw new Error(imageUpscale ? t.upscaleUnsupportedFile : t.unsupportedOperation);
-        if (firstLastVideo && (source.size === 0 || source.size > 8_000_000 || !options.lastFrame ||
+        if (imageCharacter && !usableReference(preview, ["image/png", "image/jpeg", "image/webp"], 10_000_000)) throw new Error(t.characterInvalid);
+        if ((imageEdit || imageUpscale || referenceVideo || firstLastVideo) && !usableReference(preview, ["image/png", "image/jpeg", "image/webp"])) throw new Error(imageUpscale ? t.upscaleUnsupportedFile : t.unsupportedOperation);
+        if (firstLastVideo && (!usableReference(preview, ["image/png", "image/jpeg", "image/webp"], 8_000_000) || !options.lastFrame ||
           options.lastFrame.size === 0 || options.lastFrame.size > 8_000_000 ||
           !["image/png", "image/jpeg", "image/webp"].includes(options.lastFrame.type))) throw new Error(t.firstLastTooLarge);
-        if (videoRepair && !["video/mp4", "video/webm"].includes(source.type)) throw new Error(t.unsupportedOperation);
+        if (videoRepair && !usableReference(preview, ["video/mp4", "video/webm"])) throw new Error(t.unsupportedOperation);
         let sourceAssetId = preview?.assetId;
         if (!sourceAssetId) {
+          if (!source) throw new Error(t.unsupportedOperation);
           const data = new FormData();
           data.append("file", source);
           const upload = await fetch("/api/assets", { method: "POST", credentials: "same-origin", body: data });
@@ -1880,7 +1954,7 @@ export default function WorkspaceApp() {
           const renderingSpeed = options.quality === "high" ? "QUALITY" : "BALANCED";
           endpoint = "/api/image/character";
           payload = { sourceAssetId, prompt, imageSize, renderingSpeed };
-          const identity = JSON.stringify([sourceAssetId, prompt, imageSize, renderingSpeed]);
+           const identity = JSON.stringify([sourceAssetId, prompt, imageSize, renderingSpeed, mediaProjectId]);
           const previous = characterSubmissionRef.current;
           characterKey = previous?.identity === identity ? previous.key : crypto.randomUUID();
           characterSubmissionRef.current = { identity, key: characterKey };
@@ -1899,7 +1973,7 @@ export default function WorkspaceApp() {
           }
           endpoint = "/api/image/inpaint";
           payload = { sourceAssetId, maskAssetId, prompt };
-          const identity = JSON.stringify([sourceAssetId, maskAssetId, prompt]);
+           const identity = JSON.stringify([sourceAssetId, maskAssetId, prompt, mediaProjectId]);
           const previous = inpaintSubmissionRef.current;
           inpaintKey = previous?.identity === identity ? previous.key : crypto.randomUUID();
           inpaintSubmissionRef.current = { identity, key: inpaintKey };
@@ -1961,12 +2035,13 @@ export default function WorkspaceApp() {
         } else {
           endpoint = "/api/video/repair";
           payload = { sourceAssetId, startSec: options.repairStart, endSec: options.repairEnd, prompt };
-          const identity = repairRequestIdentity(sourceAssetId, options.repairStart, options.repairEnd, prompt);
+           const identity = JSON.stringify([repairRequestIdentity(sourceAssetId, options.repairStart, options.repairEnd, prompt), mediaProjectId]);
           const previous = repairSubmissionRef.current;
           repairKey = previous?.identity === identity ? previous.key : crypto.randomUUID();
           repairSubmissionRef.current = { identity, key: repairKey };
         }
       }
+      payload = { ...payload, ...(mediaProjectId ? { projectId: mediaProjectId } : {}) };
       if (musicGeneration) {
         const identity = JSON.stringify([user.id, payload]);
         const previous = musicSubmissionRef.current;
@@ -2038,7 +2113,7 @@ export default function WorkspaceApp() {
         {view === "chat" && (user
           ? <ChatWorkspace locale={locale} user={user} conversations={conversations} historyLoading={historyLoading} selectedId={selectedConversationId} projects={projects} selectedProjectId={selectedProjectId} projectBusy={projectBusy} projectError={projectError} onSelectProject={selectProject} onCreateProject={createChatProject} onUpdateProject={updateChatProject} onDeleteProject={deleteChatProject} onMoveConversation={moveConversation} messages={messages} messageLoading={messagesLoading} pending={chatPending} error={chatError} showSeparateRequest={chatNeedsDecision} previousRequestId={chatPreviousRequestId} onSeparateRequest={startSeparateTextRequest} prompt={drafts.chat} onPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} onModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSend={() => void sendChat()} onSelect={id => void selectConversation(id)} onNew={newConversation} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />
           : <ChatLanding locale={locale} prompt={drafts.chat} setPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} setModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSubmit={() => void sendChat()} onNavigate={navigate} onStarter={useWorkflow} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />)}
-        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} onLastFrameChange={() => { lastFrameUploadRef.current = null; firstLastSubmissionRef.current = null; }} availableModels={mediaModels.filter(item => item.outputKind === view && (view !== "video" || ["fal-ai/veo3.1/fast", "fal-ai/veo3.1/fast/image-to-video", "fal-ai/veo3.1/fast/first-last-frame-to-video", "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/reference-to-video", "fal-ai/ltx-2.3-quality/inpaint"].includes(item.id)))} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} onLogin={() => openLogin("", view)} />}
+        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} onUseReference={setPreview} onLastFrameChange={() => { lastFrameUploadRef.current = null; firstLastSubmissionRef.current = null; }} availableModels={mediaModels.filter(item => item.outputKind === view && (view !== "video" || ["fal-ai/veo3.1/fast", "fal-ai/veo3.1/fast/image-to-video", "fal-ai/veo3.1/fast/first-last-frame-to-video", "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/reference-to-video", "fal-ai/ltx-2.3-quality/inpaint"].includes(item.id)))} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} onLogin={() => openLogin("", view)} projects={projects} projectId={mediaProjectId} onProjectChange={setMediaProjectId} />}
         {view === "explore" && <ConnectedExplorePage locale={locale} user={user} onUse={useWorkflow} onLogin={() => openLogin()} />}
         {view === "specialists" && <ConnectedSpecialistsPage locale={locale} onAsk={askSpecialist} />}
       </main>

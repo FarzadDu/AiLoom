@@ -3,7 +3,9 @@ import { z } from "zod";
 import { getCurrentUser, mutationOriginAllowed } from "@/server/auth/access";
 import { getOwnedAsset } from "@/server/content/assets";
 import { createGenerationJob, GenerationIdempotencyConflictError, getGenerationJob } from "@/server/content/jobs";
+import { getProject } from "@/server/content/projects";
 import { publicJob } from "@/server/content/public-job";
+import { ContentAccessError } from "@/server/content/shared";
 import { prepareMediaRequest } from "@/server/media/service";
 import { signedAssetUrl } from "@/server/storage/asset-access";
 import { parseBoundedJson } from "@/server/storage/bounded-json";
@@ -18,7 +20,8 @@ const requestSchema = z.strictObject({
   sourceAssetId: z.uuid(),
   prompt: z.string().trim().min(1).max(4000),
   imageSize: imageSize.optional(),
-  renderingSpeed: z.enum(["BALANCED", "QUALITY"]).optional()
+  renderingSpeed: z.enum(["BALANCED", "QUALITY"]).optional(),
+  projectId: z.uuid().nullable().optional()
 });
 type CharacterInput = z.output<typeof requestSchema>;
 
@@ -39,6 +42,7 @@ function replay(ownerId: string, key: string, input: CharacterInput): Response |
   if (!existing) return null;
   const payload = existing.input;
   if (existing.kind !== "image" || existing.provider !== "fal" || existing.providerModel !== MODEL ||
+    existing.projectId !== (input.projectId ?? null) ||
     !payload || typeof payload !== "object" || Array.isArray(payload) ||
     payload.modelId !== MODEL || payload.operation !== "character_to_image" ||
     payload.prompt !== input.prompt ||
@@ -70,6 +74,9 @@ export async function POST(request: Request) {
   const parsed = await parseBoundedJson(request, requestSchema, 12_000, "Invalid character request.");
   if (!parsed.success) return parsed.response;
   const input = parsed.data;
+  if (input.projectId && !getProject(current.id, input.projectId)) {
+    return Response.json({ error: "Project not found." }, { status: 404 });
+  }
   const previous = replay(current.id, key, input);
   if (previous) return previous;
 
@@ -95,6 +102,7 @@ export async function POST(request: Request) {
     const prepared = prepareMediaRequest(payload);
     const job = createGenerationJob(current.id, {
       kind: "image", provider: prepared.provider, providerModel: MODEL,
+      projectId: input.projectId,
       payload, idempotencyKey: key,
       costEstimateMicrosUsd: prepared.priceEstimate
         ? Math.round(prepared.priceEstimate.amountUsd * 1_000_000) : null
@@ -103,6 +111,9 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof GenerationIdempotencyConflictError) {
       return replay(current.id, key, input) ?? Response.json({ error: "Request key conflict." }, { status: 409 });
+    }
+    if (error instanceof ContentAccessError) {
+      return Response.json({ error: "Project not found." }, { status: 404 });
     }
     return Response.json({ error: "Could not prepare the private character reference." }, { status: 500 });
   }

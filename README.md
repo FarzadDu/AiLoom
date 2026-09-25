@@ -50,8 +50,29 @@ node --import tsx scripts/smoke-auth.ts
 3. Set `PUBLIC_BASE_URL` to the final HTTPS origin, `BETTER_AUTH_SECRET` to a high-entropy secret of at least 32 characters, and `ADMIN_EMAIL` to the founder's email in Coolify environment variables. Add `OPENROUTER_API_KEY`, `KIE_API_KEY`, `FAL_KEY`, `WAVESPEED_API_KEY`, and `ELEVENLABS_API_KEY` when available. Leave absent providers disabled or expect their jobs to fail cleanly. Never place live values in the repository or Docker image.
 4. Deploy and wait for `web` to become healthy and `worker`, `renderer`, `lora_worker` and `dubbing_worker` to run. The web startup applies migrations and seeds the three specialist profiles. Workers also apply migrations on startup. All five services mount the same `ailoom_data` volume.
 5. Open a one-time terminal in the running `web` container in Coolify and run `node --import tsx scripts/bootstrap-admin.ts`. If operating from the server's Compose project directory, the equivalent is `docker compose exec web node --import tsx scripts/bootstrap-admin.ts`. The command prints the admin invitation URL only to that terminal. Treat it as a credential: do not include it in deployment logs, support tickets, screenshots, or chat messages. Visit the link personally and create the admin account. Re-running after an account exists is rejected.
-6. Test sign-in, one chat message, a queued media job and its saved private result, and a signed private reference on the final domain before relying on automatic deployment. Back up `ailoom_data` consistently; it contains the SQLite database and private media.
+6. Test sign-in, one chat message, a queued media job and its saved private result, and a signed private reference on the final domain before relying on automatic deployment. Back up `ailoom_data` regularly; it contains the SQLite database and private media.
 
 SQLite write-ahead logging requires web and worker to share a local volume on one host. The supplied Compose file is for a single server. Move to a server database and object storage before horizontal scaling. The Docker Compose deployment has been validated on the final HTTPS host; signed private-reference and temporal repair workflows still need live provider validation.
+
+## Back up private data
+
+Run `scripts/backup-data.mjs` inside the running `web` container. It uses SQLite's online backup API to snapshot the database, then copies the private asset and LoRA files referenced by that snapshot. It checks file sizes and SHA-256 hashes, verifies SQLite integrity, and writes `manifest.json` **only after** every required file has been copied. A failed run may leave a partial directory without a manifest; discard it. New writes may continue during a backup. If deletion of a referenced file prevents its copy, the run fails; for a quiet, predictable backup, avoid deleting media while it runs.
+
+In the Coolify terminal for the Ailoom **web** container, use a fresh directory outside `/app/data`:
+
+~~~sh
+node scripts/backup-data.mjs /tmp/ailoom-backup-20260925-1200
+node scripts/backup-data.mjs --verify /tmp/ailoom-backup-20260925-1200
+~~~
+
+The script refuses an existing destination or any destination inside the live data directory. The backup contains `ailoom.sqlite`, `media/`, and `manifest.json`; it does not include `.env` or provider credentials. The database does contain account and other private data, so restrict access to the backup and transfer it over an encrypted connection.
+
+Move the completed directory **off the server** before the container is replaced. From an SSH session on the Coolify host, identify the Ailoom web container with `docker ps --format '{{.ID}} {{.Names}}'`, then copy it to a protected host directory:
+
+~~~sh
+docker cp <ailoom-web-container-id>:/tmp/ailoom-backup-20260925-1200 /path/to/protected/ailoom-backup-20260925-1200
+~~~
+
+Download that host directory to another machine or your backup store, for example with `scp -r user@coolify-host:/path/to/protected/ailoom-backup-20260925-1200 ./`. Run `node scripts/backup-data.mjs --verify ./ailoom-backup-20260925-1200` from an Ailoom checkout with dependencies installed after transfer. Keep several dated copies and test a restore on a separate instance before relying on them. Restoring requires all five services stopped, then replacing the shared volume's database and media with a verified backup before restarting the services.
 
 

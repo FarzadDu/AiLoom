@@ -6,7 +6,9 @@ import { z } from "zod";
 import { getCurrentUser, mutationOriginAllowed } from "@/server/auth/access";
 import { createAsset, deleteAsset, getOwnedAsset } from "@/server/content/assets";
 import { createGenerationJob, GenerationIdempotencyConflictError, getGenerationJob } from "@/server/content/jobs";
+import { getProject } from "@/server/content/projects";
 import { publicJob } from "@/server/content/public-job";
+import { ContentAccessError } from "@/server/content/shared";
 import type { JsonValue } from "@/server/content/types";
 import { videoToolPaths } from "@/server/media/binaries";
 import { prepareMediaRequest } from "@/server/media/service";
@@ -21,7 +23,8 @@ const requestSchema = z.object({
   sourceAssetId: z.string().uuid(),
   startSec: z.number().finite().min(0),
   endSec: z.number().finite().positive(),
-  prompt: z.string().trim().min(1).max(4000)
+  prompt: z.string().trim().min(1).max(4000),
+  projectId: z.uuid().nullable().optional()
 }).strict();
 
 type RepairInput = z.infer<typeof requestSchema>;
@@ -36,11 +39,16 @@ function record(value: unknown): Record<string, unknown> | null {
 
 /** Compare the original user request, not randomized FFmpeg paths or expiring URLs. */
 export function matchingRepairInterval(job: RepairJob, input: RepairInput): RepairInterval | null {
-  if (job.kind !== "edit" || job.provider !== "fal" || job.providerModel !== REPAIR_MODEL) return null;
+  if (job.kind !== "edit" || job.provider !== "fal" || job.providerModel !== REPAIR_MODEL ||
+    job.projectId !== (input.projectId ?? null)) return null;
   const repair = record(record(job.input)?.repair);
   if (!repair || repair.sourceAssetId !== input.sourceAssetId) return null;
   const original = requestSchema.safeParse(repair.originalRequest);
-  if (!original.success || !isDeepStrictEqual(original.data, input)) return null;
+  if (!original.success) return null;
+  const { projectId: originalProjectId, ...originalRequest } = original.data;
+  const { projectId: requestedProjectId, ...requestedInput } = input;
+  if ((originalProjectId ?? null) !== (requestedProjectId ?? null) ||
+    !isDeepStrictEqual(originalRequest, requestedInput)) return null;
   const plan = record(repair.plan);
   if (!plan) return null;
   const { targetStartSec, targetEndSec, contextStartSec, contextEndSec } = plan;
@@ -84,6 +92,9 @@ export async function POST(request: Request) {
   if (!parsed.success) return parsed.response;
   const input = parsed.data;
   if (input.endSec <= input.startSec) return Response.json({ error: "Choose a valid repair interval." }, { status: 400 });
+  if (input.projectId && !getProject(current.id, input.projectId)) {
+    return Response.json({ error: "Project not found." }, { status: 404 });
+  }
   const replay = replayRepair(current.id, key, input);
   if (replay) return replay;
   const source = getOwnedAsset(current.id, input.sourceAssetId);
@@ -107,12 +118,14 @@ export async function POST(request: Request) {
     const maskKey = relative(root, plan.maskVideoPath).split(sep).join("/");
     const context = createAsset(current.id, {
       kind: "video", source: "generation", mimeType: "video/mp4",
-      sizeBytes: (await stat(plan.contextVideoPath)).size, storageKey: contextKey
+      sizeBytes: (await stat(plan.contextVideoPath)).size, storageKey: contextKey,
+      projectId: input.projectId
     });
     createdAssets.push({ id: context.id, storageKey: context.storageKey });
     const mask = createAsset(current.id, {
       kind: "video", source: "generation", mimeType: "video/mp4",
-      sizeBytes: (await stat(plan.maskVideoPath)).size, storageKey: maskKey
+      sizeBytes: (await stat(plan.maskVideoPath)).size, storageKey: maskKey,
+      projectId: input.projectId
     });
     createdAssets.push({ id: mask.id, storageKey: mask.storageKey });
     const contextAccess = signedAssetUrl(context.id);
@@ -135,6 +148,7 @@ export async function POST(request: Request) {
     prepareMediaRequest(providerRequest);
     const job = createGenerationJob(current.id, {
       kind: "edit", provider: "fal", providerModel: providerRequest.modelId,
+      projectId: input.projectId,
       idempotencyKey: key,
       payload: {
         request: providerRequest,
@@ -152,6 +166,9 @@ export async function POST(request: Request) {
       // Another request with this key may have finished preprocessing first.
       return replayRepair(current.id, key, input) ??
         Response.json({ error: "Could not resolve the request key." }, { status: 409 });
+    }
+    if (error instanceof ContentAccessError) {
+      return Response.json({ error: "Project not found." }, { status: 404 });
     }
     if (error instanceof TemporalRepairError) {
       return Response.json({ error: error.message, code: error.code }, { status: 422 });

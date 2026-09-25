@@ -7,7 +7,8 @@ import { chatImageDigest, ChatImageRequestConflict, finishChatImageRequest,
   getOwnedChatImageRequest, reserveChatImageRequest } from "@/server/content/chat-images";
 import { getProject } from "@/server/content/projects";
 import { getDb } from "@/server/db";
-import { generateImage, type ImageReference } from "@/server/providers/openrouter-image";
+import { generateImage, OpenRouterImagePreflightError,
+  type ImageReference } from "@/server/providers/openrouter-image";
 import { OpenRouterError } from "@/server/providers/openrouter";
 import { deletePrivateFile, mediaPath, savePrivateFile } from "@/server/storage/private-files";
 import { parseBoundedJson } from "@/server/storage/bounded-json";
@@ -125,12 +126,14 @@ export async function POST(request: Request) {
     result = await generateImage({ model: input.model, prompt: input.prompt, count: 1,
       aspectRatio: input.aspectRatio, references, signal: request.signal });
   } catch (error) {
-    const definite = error instanceof OpenRouterError && error.status >= 400 &&
+    const preflightFailed = error instanceof OpenRouterImagePreflightError;
+    const definite = preflightFailed || error instanceof OpenRouterError && error.status >= 400 &&
       error.status < 500 && error.status !== 408;
     finishChatImageRequest(current.id, requestId, { state: definite ? "failed" : "uncertain",
-      errorCode: definite ? "provider_rejected" : "submission_unknown" });
+      errorCode: preflightFailed ? "model_check_failed" : definite ? "provider_rejected" : "submission_unknown" });
     return reply({ status: definite ? "failed" : "uncertain", requestId,
-      error: definite ? "Image generation was rejected. Check the model and provider credit."
+      error: preflightFailed ? "Could not check the image model. Use a new request key to try again."
+        : definite ? "Image generation was rejected. Check the model and provider credit."
         : "The provider outcome is uncertain. This request will not be sent again automatically." },
     definite ? 422 : 502);
   }

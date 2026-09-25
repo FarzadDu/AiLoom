@@ -57,8 +57,14 @@ test("chat images reserve a paid request once, replay a private result, and neve
     assert.equal((await send(other.cookie, body)).status, 404);
     assert.equal((await status(other.cookie)).status, 404);
     let providerCalls = 0;
+    let modelCatalogCalls = 0;
     let completeProvider: ((value: Response) => void) | null = null;
     globalThis.fetch = async (url, init) => {
+      if (String(url) === "https://openrouter.ai/api/v1/images/models") {
+        modelCatalogCalls++;
+        return Response.json({ data: [{ id: body.model, name: "Nano Banana 2",
+          supported_parameters: {} }] });
+      }
       assert.equal(String(url), "https://openrouter.ai/api/v1/images");
       assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer test-only-openrouter-key");
       assert.equal(JSON.stringify(init?.body).includes(project.id), false);
@@ -72,6 +78,7 @@ test("chat images reserve a paid request once, replay a private result, and neve
     assert.equal((await send(owner.cookie, body)).status, 202);
     assert.equal((await send(owner.cookie, { ...body, prompt: "Changed" })).status, 409);
     assert.equal(providerCalls, 1);
+    assert.equal(modelCatalogCalls, 1);
     completeProvider!(Response.json({ data: [{ b64_json: PNG.toString("base64"), media_type: "image/png" }],
       usage: { cost: 0.02 } }));
     const created = await first;
@@ -91,7 +98,13 @@ test("chat images reserve a paid request once, replay a private result, and neve
     assert.equal(listMessages(owner.id, result.conversationId)?.length, 2);
 
     const uncertainId = randomUUID();
-    globalThis.fetch = async () => { providerCalls++; throw new Error("Connection lost after send"); };
+    globalThis.fetch = async (url) => {
+      if (String(url).endsWith("/images/models")) return Response.json({ data: [{
+        id: body.model, name: "Nano Banana 2", supported_parameters: {}
+      }] });
+      providerCalls++;
+      throw new Error("Connection lost after send");
+    };
     const uncertainBody = { ...body, requestId: uncertainId, prompt: "Maybe generated" };
     const uncertain = await send(owner.cookie, uncertainBody);
     assert.equal(uncertain.status, 502);
@@ -100,6 +113,19 @@ test("chat images reserve a paid request once, replay a private result, and neve
     assert.equal((await send(owner.cookie, uncertainBody)).status, 409);
     assert.equal((await status(owner.cookie, uncertainId)).status, 409);
     assert.equal(providerCalls, callCount);
+
+    const preflightId = randomUUID();
+    globalThis.fetch = async (url) => {
+      if (String(url).endsWith("/images/models")) throw new Error("Catalog connection lost");
+      providerCalls++;
+      throw new Error("The paid POST must not be reached");
+    };
+    const preflightBody = { ...body, requestId: preflightId, prompt: "Check the model" };
+    const preflight = await send(owner.cookie, preflightBody);
+    assert.equal(preflight.status, 422);
+    assert.equal((await preflight.json()).status, "failed");
+    assert.equal(providerCalls, callCount);
+    assert.equal((await status(owner.cookie, preflightId)).status, 409);
   } finally {
     globalThis.fetch = originalFetch;
     getSqlite().close();

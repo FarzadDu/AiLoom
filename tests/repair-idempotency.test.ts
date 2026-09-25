@@ -14,7 +14,9 @@ test("repair replays the same paid job before source probing and rejects changed
   process.env.BETTER_AUTH_URL = "http://localhost:3000";
   process.env.PUBLIC_BASE_URL = "http://localhost:3000";
   const { getDb, getSqlite } = await import("../src/server/db");
+  const { user } = await import("../src/server/db/schema");
   const { createInvite } = await import("../src/server/auth/invites");
+  const { createProject } = await import("../src/server/content/projects");
   const authRoute = await import("../src/app/api/auth/[...all]/route");
   const repairRoute = await import("../src/app/api/video/repair/route");
   const { createGenerationJob, GenerationIdempotencyConflictError } = await import("../src/server/content/jobs");
@@ -33,6 +35,12 @@ test("repair replays the same paid job before source probing and rejects changed
     assert.ok(cookie);
     const signupData = await signup.json();
     const ownerId = signupData.user.id as string;
+    const project = createProject(ownerId, { name: "Repair project" });
+    const foreignOwnerId = randomUUID();
+    const now = new Date();
+    getDb().insert(user).values({ id: foreignOwnerId, name: "Other", email: "repair-other@example.test",
+      role: "user", emailVerified: true, createdAt: now, updatedAt: now }).run();
+    const foreignProject = createProject(foreignOwnerId, { name: "Private project" });
     const key = randomUUID();
     const originalRequest = {
       sourceAssetId: randomUUID(), startSec: 10, endSec: 12, prompt: "Replace the cup"
@@ -70,6 +78,19 @@ test("repair replays the same paid job before source probing and rejects changed
     assert.equal((await send(originalRequest, "not-a-uuid")).status, 400);
     assert.equal((await send(originalRequest, randomUUID())).status, 404);
     assert.equal((await send({ ...originalRequest, prompt: "x".repeat(20_000) })).status, 413);
+
+    const projectKey = randomUUID();
+    const projectRequest = { ...originalRequest, projectId: project.id };
+    const projectJob = createGenerationJob(ownerId, {
+      ...jobInput, idempotencyKey: projectKey, projectId: project.id,
+      payload: { ...jobInput.payload, repair: { ...jobInput.payload.repair,
+        originalRequest: projectRequest } }
+    });
+    assert.equal((await send(projectRequest, projectKey)).status, 202);
+    assert.equal(projectJob.projectId, project.id);
+    assert.equal((await send({ ...projectRequest, projectId: null }, projectKey)).status, 409);
+    assert.equal((await send({ ...projectRequest, projectId: "invalid" }, randomUUID())).status, 400);
+    assert.equal((await send({ ...projectRequest, projectId: foreignProject.id }, randomUUID())).status, 404);
 
     // A simultaneous preprocessing attempt would produce a different plan and
     // fail at the unique job key. The route's conflict handler replays this job.

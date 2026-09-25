@@ -19,15 +19,18 @@
 .modelBadge { display: grid; place-items: center; width: 48px; height: 48px; border: 1px solid var(--line-strong); border-radius: 13px; background: var(--accent-soft); color: var(--accent); font-size: 13px; font-weight: 760; letter-spacing: -.04em; }
 .card form { display: grid; gap: 11px; margin-top: 28px; }
 .card label, .label { color: var(--secondary); font-size: 13px; font-weight: 700; }
-.card textarea, .card input, .card select { display: block; width: 100%; min-height: 46px; margin-top: 8px; padding: 11px 13px; border: 1px solid var(--line-strong); border-radius: 11px; outline: none; background: var(--surface-soft); color: var(--ink); font-size: 15px; font-weight: 450; }
+.card textarea, .card input { display: block; width: 100%; min-height: 46px; margin-top: 8px; padding: 11px 13px; border: 1px solid var(--line-strong); border-radius: 11px; outline: none; background: var(--surface-soft); color: var(--ink); font-size: 15px; font-weight: 450; }
+.card :global(.ailoom-select) { border-radius: 11px; }
+.card :global(.ailoom-select-trigger) { min-height: 46px; font-size: 15px; }
 .card textarea { min-height: 148px; resize: vertical; line-height: 1.65; }
-.card textarea:focus, .card input:focus, .card select:focus { border-color: var(--accent); }
+.card textarea:focus, .card input:focus { border-color: var(--accent); }
 .card textarea::placeholder, .card input::placeholder { color: var(--muted); opacity: 1; }
 .label { margin: 2px 0 0; }
 .presets { display: flex; flex-wrap: wrap; gap: 8px; }
 .presets button { min-height: 39px; padding: 5px 13px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--secondary); font-size: 13px; }
 .presets button:hover { border-color: var(--accent); color: var(--accent); }
 .settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 8px; }
+.settings label :global(.ailoom-select) { margin-top: 8px; }
 .submitRow { display: flex; align-items: center; gap: 19px; margin-top: 14px; }
 .submitRow p { max-width: 560px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .action { display: inline-flex; flex: none; align-items: center; justify-content: center; width: fit-content; min-height: 48px; padding: 0 22px; border: 1px solid var(--accent); border-radius: 11px; background: var(--accent); color: var(--button-ink); font-size: 14px; font-weight: 720; text-decoration: none; }

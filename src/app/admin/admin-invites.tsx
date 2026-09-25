@@ -2,6 +2,7 @@
 
 import { ArrowLeft, Check, Copy, Moon, Plus, Sun, UserRoundPlus, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { ThemedSelect } from "@/components/themed-select";
 import styles from "./admin.module.css";
 
 type Locale = "en" | "fa";
@@ -203,7 +204,7 @@ export default function AdminInvites({ initialInvites, adminEmail }: { initialIn
             <label htmlFor="invite-email">{t.email}</label>
             <input id="invite-email" type="email" autoComplete="email" required value={email} onChange={event => setEmail(event.target.value)} placeholder="name@example.com" dir="ltr" disabled={busy} />
             <div className={styles.formRow}>
-              <div><label htmlFor="invite-role">{t.role}</label><select id="invite-role" value={role} onChange={event => setRole(event.target.value as Invite["role"])} disabled={busy}><option value="user">{t.user}</option><option value="admin">{t.administrator}</option></select></div>
+              <div><label htmlFor="invite-role">{t.role}</label><ThemedSelect id="invite-role" value={role} onValueChange={value => setRole(value as Invite["role"])} disabled={busy}><option value="user">{t.user}</option><option value="admin">{t.administrator}</option></ThemedSelect></div>
               <div><label htmlFor="invite-days">{t.days}</label><div className={styles.daysInput}><input id="invite-days" type="number" min={1} max={30} step={1} value={days} onChange={event => setDays(Number(event.target.value))} disabled={busy} /><span>{days === 1 ? t.day : t.daysPlural}</span></div></div>
             </div>
             <button className={styles.primary} type="submit" disabled={busy}><Plus size={18} aria-hidden="true" />{busy ? t.issuing : t.issue}</button>

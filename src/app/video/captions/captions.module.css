@@ -32,8 +32,9 @@
 .sectionHead span { color: var(--accent); font-size: 12px; font-weight: 770; letter-spacing: .05em; }
 .sectionHead h2 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -.045em; }
 .label { display: block; margin: 0 0 11px; color: var(--secondary); font-size: 13px; font-weight: 630; }
-.select, .textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface-soft); color: var(--ink); }
-.select { min-height: 48px; padding: 0 14px; text-overflow: ellipsis; }
+.textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface-soft); color: var(--ink); }
+.card :global(.ailoom-select) { border-radius: 14px; }
+.card :global(.ailoom-select-trigger) { min-height: 48px; padding-inline: 14px; }
 .textarea { min-height: 240px; resize: vertical; padding: 15px; line-height: 1.65; margin-top: 19px; font-size: 13px; }
 .fileLabel { display: flex; align-items: center; gap: 10px; width: fit-content; min-height: 47px; margin-top: 22px; padding: 0 16px 0 10px; color: var(--ink); border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); cursor: pointer; font-size: 13px; font-weight: 620; }
 .fileLabel:hover { border-color: var(--accent); }
@@ -43,7 +44,7 @@
 .preview, .output { display: block; width: 100%; margin-top: 24px; border-radius: 14px; aspect-ratio: 16 / 9; object-fit: contain; background: #090d12; }
 .formatRow { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .formatRow .label { margin-bottom: 0; }
-.formatRow .select { width: 156px; }
+.formatRow :global(.ailoom-select) { width: 156px; }
 .renderButton, .primaryLink { display: inline-flex; align-items: center; justify-content: space-between; gap: 26px; min-height: 50px; margin-top: 20px; padding: 0 19px; color: var(--button-ink); background: var(--accent); border: 1px solid var(--accent); border-radius: 12px; font-size: 13px; font-weight: 690; text-decoration: none; }
 .renderButton { width: 100%; }
 .renderButton:hover:not(:disabled), .primaryLink:hover { opacity: .88; }

@@ -123,6 +123,7 @@ test("private inpaint checks ownership and dimensions before queueing, then repl
   const { user } = await import("../src/server/db/schema");
   const { createInvite } = await import("../src/server/auth/invites");
   const { createAsset } = await import("../src/server/content/assets");
+  const { createProject } = await import("../src/server/content/projects");
   const { getGenerationJob } = await import("../src/server/content/jobs");
   const { savePrivateFile } = await import("../src/server/storage/private-files");
   const authRoute = await import("../src/app/api/auth/[...all]/route");
@@ -144,6 +145,8 @@ test("private inpaint checks ownership and dimensions before queueing, then repl
     const now = new Date();
     getDb().insert(user).values({ id: otherId, name: "Other", email: "inpaint-other@example.test",
       role: "user", emailVerified: true, createdAt: now, updatedAt: now }).run();
+    const project = createProject(ownerId, { name: "Image edits" });
+    const foreignProject = createProject(otherId, { name: "Private" });
     const makeAsset = async (owner: string, bytes: Buffer) => {
       const saved = await savePrivateFile(bytes, "image/png");
       return createAsset(owner, { ...saved, source: "upload" }).id;
@@ -153,7 +156,8 @@ test("private inpaint checks ownership and dimensions before queueing, then repl
     const mismatchedMaskId = await makeAsset(ownerId, png(384, 512, true));
     const foreignMaskId = await makeAsset(otherId, png(512, 512, true));
     const key = randomUUID();
-    const input = { sourceAssetId, maskAssetId, prompt: "Replace the central object" };
+    const input = { sourceAssetId, maskAssetId, prompt: "Replace the central object",
+      projectId: project.id };
     const send = (value: unknown, requestKey: string = key, headers: Record<string, string> = {}) =>
       inpaintRoute.POST(new Request("http://localhost:3000/api/image/inpaint", {
         method: "POST", headers: { origin: "http://localhost:3000", cookie,
@@ -164,6 +168,8 @@ test("private inpaint checks ownership and dimensions before queueing, then repl
       { method: "POST", body: JSON.stringify(input) }))).status, 401);
     assert.equal((await send(input, key, { origin: "https://other.example.test" })).status, 403);
     assert.equal((await send(input, "bad-key")).status, 400);
+    assert.equal((await send({ ...input, projectId: "invalid" }, randomUUID())).status, 400);
+    assert.equal((await send({ ...input, projectId: foreignProject.id }, randomUUID())).status, 404);
     assert.equal((await send({ ...input, maskAssetId: foreignMaskId })).status, 404);
     assert.equal((await send({ ...input, maskAssetId: mismatchedMaskId })).status, 422);
     let probeCount = 0;
@@ -180,12 +186,15 @@ test("private inpaint checks ownership and dimensions before queueing, then repl
     const stored = getGenerationJob(ownerId, key);
     assert.equal(stored?.providerModel, MODEL);
     assert.equal(stored?.kind, "edit");
+    assert.equal(stored?.projectId, project.id);
     assert.ok(typeof stored?.input === "object" && stored.input !== null);
+    assert.equal("projectId" in (stored?.input as Record<string, unknown>), false);
     const replayed = await send(input);
     assert.equal(replayed.status, 202);
     assert.equal((await replayed.json()).job.id, key);
     assert.equal(probeCount, 2);
     assert.equal((await send({ ...input, prompt: "Different object" })).status, 409);
+    assert.equal((await send({ ...input, projectId: null })).status, 409);
     assert.equal((await send({ ...input, maskAssetId: mismatchedMaskId })).status, 409);
     const genericBody = { modelId: "wavespeed-ai/z-image/turbo", operation: "text_to_image",
       prompt: "A ceramic mug" };

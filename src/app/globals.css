@@ -45,6 +45,23 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, input:focus-
   outline-offset: 3px;
 }
 button:disabled { cursor: not-allowed; }
+.ailoom-select { position: relative; width: 100%; min-width: 0; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface-soft); color: var(--ink); }
+.ailoom-select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-width: 0; min-height: 44px; padding: 8px 12px; border: 0; border-radius: inherit; background: transparent; color: inherit; text-align: start; font: inherit; font-size: 14px; }
+.ailoom-select-trigger:disabled { opacity: .58; }
+.ailoom-select-trigger svg { flex: none; color: var(--muted); }
+.ailoom-select-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ailoom-select:focus-within { border-color: var(--accent); }
+.ailoom-select-menu { position: fixed; z-index: 1200; overflow-y: auto; overscroll-behavior: contain; padding: 5px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); color: var(--ink); box-shadow: 0 18px 42px rgba(0,0,0,.22); }
+.ailoom-select-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 38px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+.ailoom-select-option[data-active="true"] { background: var(--accent-soft); color: var(--ink); }
+.ailoom-select-option[aria-selected="true"] { color: var(--accent); font-weight: 680; }
+.ailoom-select-option[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+.ailoom-select-error { display: block; padding: 3px 4px 6px; color: #a43f38; font-size: 12px; }
+html[data-theme="dark"] .ailoom-select-error { color: #fac8c1; }
+.select-shell .ailoom-select, .chat-project-picker .ailoom-select { border: 0; background: transparent; }
+.select-shell .ailoom-select-trigger { min-height: 42px; padding: 0; }
+.chat-project-picker .ailoom-select { max-width: 150px; }
+.chat-project-picker .ailoom-select-trigger { min-height: 32px; padding: 2px; font-size: 12px; }
 svg { flex: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
@@ -239,7 +256,7 @@ html[dir="rtl"] .sample-user span { border-radius: 13px 13px 13px 3px; }
 .chat-main-header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 690; }
 .chat-main-meta { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .chat-project-picker { display: inline-flex; align-items: center; gap: 5px; min-width: 0; color: var(--secondary); }
-.chat-project-picker select { max-width: 150px; padding: 5px 2px; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 12px; }
+.chat-project-picker .ailoom-select { max-width: 150px; }
 .chat-project-note { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px clamp(22px, 4vw, 52px); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
 .chat-project-note span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-model-badge { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 13px; }
@@ -345,6 +362,8 @@ html[data-theme="dark"] .inpaint-message { color: #fac8c1; }
 .generated-result audio { display: block; width: 100%; padding: 15px; }
 .generated-result a { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 13px; color: var(--accent); font-size: 13px; font-weight: 680; text-decoration: none; }
 .generated-result a:hover { text-decoration: underline; }
+.generated-result .result-reference { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 13px; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 13px; font-weight: 680; }
+.generated-result .result-reference:hover { text-decoration: underline; }
 .result-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; padding-inline-end: 9px; }
 .asset-visibility { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .asset-visibility span { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 13px; }
@@ -630,7 +649,7 @@ html[data-theme="dark"] .auth-form .auth-error { background: #3e292c; color: #fa
   .chat-project-form { max-width: 440px; }
   .chat-project-note { padding-inline: 19px; }
   .chat-main-meta { gap: 6px; }
-  .chat-project-picker select { max-width: 105px; }
+  .chat-project-picker .ailoom-select { max-width: 105px; }
   .history-list { display: flex; gap: 5px; min-height: 0; overflow-x: auto; scrollbar-width: none; }
   .history-list button { flex: none; width: auto; max-width: 210px; min-height: 44px; }
   .chat-main, .chat-workspace { min-height: calc(100vh - 128px); }

@@ -28,6 +28,7 @@ export type FalSubmission = {
   endpoint: string;
   state: "queued";
   queuePosition: number | null;
+  queueReference: string | null;
 };
 export type FalTask = {
   requestId: string;
@@ -96,6 +97,55 @@ function queueControlPath(endpoint: string): string {
   return (parts[0] === "workflows" || parts[0] === "comfy")
     ? parts.slice(0, 3).join("/")
     : parts.slice(0, 2).join("/");
+}
+
+type QueueReference = { requestId: string; queuePath: string; resultSuffix: "" | "/response" };
+
+/** Compact, durable form of the lifecycle URLs returned by fal at submission. */
+export function decodeFalQueueReference(value: string): QueueReference | null {
+  const match = /^falq1:([A-Za-z0-9_-]{1,128}):([A-Za-z0-9][A-Za-z0-9._/-]{1,240}):(root|response)$/.exec(value);
+  if (!match || !ENDPOINT_PATTERN.test(match[2])) return null;
+  return { requestId: match[1], queuePath: match[2],
+    resultSuffix: match[3] === "response" ? "/response" : "" };
+}
+
+function queueUrl(value: unknown): URL | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "queue.fal.run" &&
+      !url.port && !url.username && !url.password && !url.search && !url.hash ? url : null;
+  } catch { return null; }
+}
+
+function submittedQueueReference(data: Record<string, unknown>, id: string): string | null {
+  if (data.status_url === undefined && data.response_url === undefined) return null;
+  const status = queueUrl(data.status_url);
+  const result = queueUrl(data.response_url);
+  const suffix = "/requests/" + id;
+  if (!status || !result || !status.pathname.endsWith(suffix + "/status")) {
+    throw new FalError(200, "uncertain_submission");
+  }
+  const queuePath = status.pathname.slice(1, -(suffix.length + "/status".length));
+  if (!ENDPOINT_PATTERN.test(queuePath) || queuePath.length > 240 ||
+      result.pathname !== "/" + queuePath + suffix &&
+      result.pathname !== "/" + queuePath + suffix + "/response") {
+    throw new FalError(200, "uncertain_submission");
+  }
+  const resultSuffix = result.pathname.endsWith("/response") ? "response" : "root";
+  return `falq1:${id}:${queuePath}:${resultSuffix}`;
+}
+
+function lifecyclePath(endpoint: string, id: string, queueReference?: string): {
+  status: string; result: string;
+} {
+  const reference = queueReference ? decodeFalQueueReference(queueReference) : null;
+  if (queueReference && (!reference || reference.requestId !== id)) {
+    throw new Error("Invalid Fal queue reference.");
+  }
+  const base = BASE_URL + "/" + (reference?.queuePath ?? queueControlPath(endpoint)) +
+    "/requests/" + encodeURIComponent(id);
+  return { status: base + "/status?logs=0", result: base + (reference?.resultSuffix ?? "") };
 }
 
 function requestId(value: string): string {
@@ -167,7 +217,8 @@ export async function submitFalTask(options: RequestOptions & {
     requestId: data.request_id,
     endpoint,
     state: "queued",
-    queuePosition: nonnegativeInteger(data.queue_position)
+    queuePosition: nonnegativeInteger(data.queue_position),
+    queueReference: submittedQueueReference(data, data.request_id)
   };
 }
 
@@ -182,10 +233,11 @@ function nonnegativeNumber(value: unknown): number | null {
 export async function getFalTask(options: RequestOptions & {
   endpoint: string;
   requestId: string;
+  queueReference?: string;
 }): Promise<FalTask> {
   const endpoint = endpointPath(options.endpoint);
   const id = requestId(options.requestId);
-  const url = BASE_URL + "/" + queueControlPath(endpoint) + "/requests/" + encodeURIComponent(id) + "/status?logs=0";
+  const url = lifecyclePath(endpoint, id, options.queueReference).status;
   const data = await requestJson(url, options, "GET");
   if (data.request_id !== id) throw new FalError(200, "invalid_response");
   const providerState = data.status;
@@ -259,10 +311,11 @@ function mediaOutputs(data: Record<string, unknown>): FalMediaOutput[] {
 export async function getFalResult(options: RequestOptions & {
   endpoint: string;
   requestId: string;
+  queueReference?: string;
 }): Promise<FalResult> {
   const endpoint = endpointPath(options.endpoint);
   const id = requestId(options.requestId);
-  const url = BASE_URL + "/" + queueControlPath(endpoint) + "/requests/" + encodeURIComponent(id);
+  const url = lifecyclePath(endpoint, id, options.queueReference).result;
   const data = await requestJson(url, options, "GET");
   return {
     requestId: id,

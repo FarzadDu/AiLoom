@@ -6,6 +6,7 @@ import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown, Clapperb
   Film, Image as ImageIcon, Layers3, LoaderCircle, Moon, Plus, RefreshCw, Sun,
   Trash2, UploadCloud, WandSparkles, X } from "lucide-react";
 import { mediaJobFromPayload, type MediaJob, type MediaModel } from "@/components/media-api";
+import { ThemedSelect } from "@/components/themed-select";
 import { responseError } from "@/components/chat-api";
 import { chooseStoryboardRenderRequest, normalizeShotControls, storyboardAssetsFromPayload, storyboardFromPayload,
   storyboardRenderReadiness, storyboardRenderSnapshot, storyboardVideoModels, storyboardsFromPayload, type ShotAspect, type StoryboardAsset,
@@ -423,9 +424,9 @@ export default function StoryboardStudio({ user }: { user: User }) {
             <form className={styles.editor} onSubmit={saveShot}>
               <div className={styles.field}><label htmlFor="shot-title">{t.shotTitle}</label><input id="shot-title" value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} maxLength={120} required /></div>
               <div className={styles.field}><label htmlFor="shot-prompt">{t.prompt}</label><textarea id="shot-prompt" value={draft.prompt} onChange={event => setDraft({ ...draft, prompt: event.target.value })} placeholder={t.promptHint} maxLength={4000} rows={5} dir="auto" required /></div>
-              <div className={styles.threeFields}><div className={styles.field}><label htmlFor="shot-model">{t.model}</label><select id="shot-model" value={draft.modelId} onChange={event => setModel(event.target.value)} required><option value="" disabled>{t.modelRequired}</option>{modelOptions.map(item => <option key={item.id} value={item.id}>{item.name} · {item.provider}</option>)}</select></div>
-                <div className={styles.field}><label htmlFor="shot-duration">{t.duration}</label><select id="shot-duration" value={draft.durationSec} onChange={event => setDraft({ ...draft, durationSec: Number(event.target.value) })}>{(draft.modelId.startsWith("fal-ai/veo3.1/") ? [4, 6, 8] : Array.from({ length: 27 }, (_, i) => i + 4)).map(seconds => <option key={seconds} value={seconds}>{seconds} {t.seconds}</option>)}</select></div>
-                <div className={styles.field}><label htmlFor="shot-aspect">{t.aspect}</label><select id="shot-aspect" value={draft.aspectRatio} onChange={event => setDraft({ ...draft, aspectRatio: event.target.value as ShotAspect })}>{(draft.modelId.startsWith("fal-ai/veo3.1/") ? ASPECTS.slice(0, 2) : ASPECTS).map(aspect => <option key={aspect} value={aspect}>{aspect}</option>)}</select></div></div>
+              <div className={styles.threeFields}><div className={styles.field}><label htmlFor="shot-model">{t.model}</label><ThemedSelect id="shot-model" value={draft.modelId} onValueChange={setModel} required><option value="" disabled>{t.modelRequired}</option>{modelOptions.map(item => <option key={item.id} value={item.id}>{item.name} · {item.provider}</option>)}</ThemedSelect></div>
+                <div className={styles.field}><label htmlFor="shot-duration">{t.duration}</label><ThemedSelect id="shot-duration" value={draft.durationSec} onValueChange={value => setDraft({ ...draft, durationSec: Number(value) })}>{(draft.modelId.startsWith("fal-ai/veo3.1/") ? [4, 6, 8] : Array.from({ length: 27 }, (_, i) => i + 4)).map(seconds => <option key={seconds} value={seconds}>{seconds} {t.seconds}</option>)}</ThemedSelect></div>
+                <div className={styles.field}><label htmlFor="shot-aspect">{t.aspect}</label><ThemedSelect id="shot-aspect" value={draft.aspectRatio} onValueChange={value => setDraft({ ...draft, aspectRatio: value as ShotAspect })}>{(draft.modelId.startsWith("fal-ai/veo3.1/") ? ASPECTS.slice(0, 2) : ASPECTS).map(aspect => <option key={aspect} value={aspect}>{aspect}</option>)}</ThemedSelect></div></div>
               {currentModel && <p className={styles.modelNote}>{currentModel.priceNote || currentModel.provider}</p>}
               <div className={styles.assetGrid}>
                 <AssetSelect id="first-frame" label={t.firstFrame} value={draft.firstFrameAssetId} kind="image" assets={assets} copy={t} onChange={value => setDraft({ ...draft, firstFrameAssetId: value })} />
@@ -468,8 +469,8 @@ function AssetSelect({ id, label, value, kind, assets, copy, onChange }: {
 }) {
   const matching = assets.filter(item => item.kind === kind);
   const missing = value && !matching.some(item => item.id === value);
-  return <div className={styles.field}><label htmlFor={id}>{label}</label><select id={id} value={value || ""} onChange={event => onChange(event.target.value || null)}>
+  return <div className={styles.field}><label htmlFor={id}>{label}</label><ThemedSelect id={id} value={value || ""} onValueChange={selected => onChange(selected || null)}>
     <option value="">{copy.none}</option>{missing && <option value={value}>{value.slice(0, 8)}</option>}
     {matching.map(item => <option key={item.id} value={item.id}>{assetLabel(item, item.id, copy)}</option>)}
-  </select></div>;
+  </ThemedSelect></div>;
 }

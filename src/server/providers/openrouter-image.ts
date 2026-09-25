@@ -40,6 +40,14 @@ export type ImageRequest = {
   signal?: AbortSignal;
 };
 
+/** The image generation POST was never sent, so this failure is safe to classify as definite. */
+export class OpenRouterImagePreflightError extends Error {
+  constructor() {
+    super("Could not verify the image model before generation.");
+    this.name = "OpenRouterImagePreflightError";
+  }
+}
+
 function key(apiKey?: string): string {
   const result = apiKey || process.env.OPENROUTER_API_KEY;
   if (!result) throw new Error("OpenRouter is not configured.");
@@ -58,12 +66,37 @@ function textArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((part): part is string => typeof part === "string") : [];
 }
 
+const RASTER_FORMATS = ["png", "webp", "jpeg"] as const;
+
+function availableOutputFormats(parameters: Record<string, unknown>): string[] | null {
+  const descriptor = parameters.output_format;
+  if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor) ||
+      !("type" in descriptor) || descriptor.type !== "enum" ||
+      !("values" in descriptor) || !Array.isArray(descriptor.values)) return null;
+  return textArray(descriptor.values);
+}
+
+function rasterOutputFormat(model: ImageModel, requested?: ImageRequest["outputFormat"]): ImageRequest["outputFormat"] {
+  const available = availableOutputFormats(model.supportedParameters);
+  if (!available) return requested;
+  if (requested) {
+    if (!available.includes(requested)) throw new OpenRouterError(422);
+    return requested;
+  }
+  if (!available.includes("svg")) return undefined;
+  const raster = RASTER_FORMATS.find(format => available.includes(format));
+  if (!raster) throw new OpenRouterError(422);
+  return raster;
+}
+
 export async function listImageModels(options: {
   apiKey?: string;
   fetcher?: typeof fetch;
+  signal?: AbortSignal;
 } = {}): Promise<ImageModel[]> {
   const response = await (options.fetcher || fetch)(BASE_URL + "/images/models", {
     headers: requestHeaders(key(options.apiKey)),
+    signal: options.signal,
     cache: "no-store"
   });
   if (!response.ok) throw new OpenRouterError(response.status);
@@ -82,7 +115,7 @@ export async function listImageModels(options: {
       supported_parameters?: unknown;
       supports_streaming?: unknown;
     };
-    return [{
+    const parsed: ImageModel = {
       id: model.id,
       name: model.name,
       description: typeof model.description === "string" ? model.description : null,
@@ -90,7 +123,9 @@ export async function listImageModels(options: {
       supportedParameters: model.supported_parameters && typeof model.supported_parameters === "object" &&
         !Array.isArray(model.supported_parameters) ? model.supported_parameters as Record<string, unknown> : {},
       supportsStreaming: model.supports_streaming === true
-    }];
+    };
+    const formats = availableOutputFormats(parsed.supportedParameters);
+    return formats?.includes("svg") && !RASTER_FORMATS.some(format => formats.includes(format)) ? [] : [parsed];
   }).sort((a: ImageModel, b: ImageModel) => a.name.localeCompare(b.name));
 }
 
@@ -98,6 +133,20 @@ export async function generateImage(request: ImageRequest): Promise<ImageResult>
   const count = request.count ?? 1;
   if (!Number.isInteger(count) || count < 1 || count > 10) throw new Error("Image count must be between 1 and 10.");
   if (!request.prompt.trim()) throw new Error("Image prompt is required.");
+  // The private asset pipeline accepts raster images only. Check the live model catalog before
+  // making a billable request, including when a caller supplies a model outside the UI catalog.
+  let models: ImageModel[];
+  try {
+    models = await listImageModels({ apiKey: request.apiKey, fetcher: request.fetcher,
+      signal: request.signal });
+  } catch (error) {
+    if (error instanceof OpenRouterError && error.status >= 400 && error.status < 500) throw error;
+    throw new OpenRouterImagePreflightError();
+  }
+  if (request.signal?.aborted) throw new OpenRouterImagePreflightError();
+  const model = models.find(item => item.id === request.model);
+  if (!model) throw new OpenRouterError(422);
+  const outputFormat = rasterOutputFormat(model, request.outputFormat);
   const response = await (request.fetcher || fetch)(BASE_URL + "/images", {
     method: "POST",
     headers: requestHeaders(key(request.apiKey)),
@@ -108,7 +157,7 @@ export async function generateImage(request: ImageRequest): Promise<ImageResult>
       ...(request.resolution ? { resolution: request.resolution } : {}),
       ...(request.aspectRatio ? { aspect_ratio: request.aspectRatio } : {}),
       ...(request.quality ? { quality: request.quality } : {}),
-      ...(request.outputFormat ? { output_format: request.outputFormat } : {}),
+      ...(outputFormat ? { output_format: outputFormat } : {}),
       ...(request.references?.length ? { input_references: request.references } : {})
     }),
     signal: request.signal,

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createKieTask, getKieTask } from "../providers/kie";
-import { getFalResult, getFalTask, submitFalTask } from "../providers/fal";
+import { decodeFalQueueReference, getFalResult, getFalTask, submitFalTask } from "../providers/fal";
 import { getWaveSpeedTask, submitWaveSpeedTask } from "../providers/wavespeed";
 import {
   getMediaModel, type MediaModel, type MediaOperation, type MediaProvider
@@ -26,6 +26,8 @@ export type MediaSubmission = {
   modelId: string;
   operation: MediaOperation;
   providerTaskId: string;
+  /** Durable lifecycle path from fal's accepted queue response, when supplied. */
+  providerQueueReference?: string;
   state: "queued" | "running" | "completed" | "failed";
   priceEstimate: MediaPriceEstimate | null;
 };
@@ -575,7 +577,8 @@ export async function submitMediaRequest(
       webhookUrl
     });
     return { provider: prepared.provider, modelId: prepared.modelId, operation: prepared.operation,
-      providerTaskId: task.requestId, state: task.state, priceEstimate: prepared.priceEstimate };
+      providerTaskId: task.requestId, providerQueueReference: task.queueReference ?? undefined,
+      state: task.state, priceEstimate: prepared.priceEstimate };
   }
   const task = await submitWaveSpeedTask({
     ...common, model: prepared.modelId, input: prepared.providerInput,
@@ -595,7 +598,10 @@ export async function getMediaTask(
 ): Promise<MediaTask> {
   const model = getMediaModel(reference.modelId);
   if (!model) throw new MediaRequestError("unsupported_model", ["modelId"]);
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(reference.providerTaskId)) {
+  const queueReference = model.provider === "fal"
+    ? decodeFalQueueReference(reference.providerTaskId) : null;
+  const taskId = queueReference?.requestId ?? reference.providerTaskId;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(taskId)) {
     throw new MediaRequestError("invalid_input", ["providerTaskId"]);
   }
   const common = {
@@ -623,15 +629,17 @@ export async function getMediaTask(
   }
   if (model.provider === "fal") {
     const task = await getFalTask({
-      ...common, endpoint: model.id, requestId: reference.providerTaskId
+      ...common, endpoint: model.id, requestId: taskId,
+      queueReference: queueReference ? reference.providerTaskId : undefined
     });
     const result = task.state === "completed" ? await getFalResult({
-      ...common, endpoint: model.id, requestId: reference.providerTaskId
+      ...common, endpoint: model.id, requestId: taskId,
+      queueReference: queueReference ? reference.providerTaskId : undefined
     }) : null;
     return {
       provider: model.provider,
       modelId: model.id,
-      providerTaskId: reference.providerTaskId,
+      providerTaskId: taskId,
       state: task.state,
       assets: result ? result.outputs
         .filter(output => (output.kind === model.outputKind || output.kind === "file") && assetUrl(output.url) !== null)

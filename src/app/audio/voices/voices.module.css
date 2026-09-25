@@ -17,10 +17,11 @@
 .card h2, .listSection h2 { margin: 0 0 24px; font-size: 24px; font-weight: 650; letter-spacing: -.035em; }
 .card form { display: grid; gap: 11px; }
 .card label:not(.consent) { margin-top: 10px; color: var(--secondary); font-size: 13px; font-weight: 700; }
-.card input:not([type="checkbox"]), .card select, .card textarea { display: block; width: 100%; min-height: 46px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 10px; outline: none; background: var(--surface-soft); color: var(--ink); font-size: 15px; }
+.card input:not([type="checkbox"]), .card textarea { display: block; width: 100%; min-height: 46px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 10px; outline: none; background: var(--surface-soft); color: var(--ink); font-size: 15px; }
+.card :global(.ailoom-select-trigger) { min-height: 46px; font-size: 15px; }
 .card input[type="file"] { max-width: 100%; }
 .card textarea { min-height: 165px; resize: vertical; line-height: 1.7; }
-.card input:focus, .card select:focus, .card textarea:focus { border-color: var(--accent); }
+.card input:focus, .card textarea:focus { border-color: var(--accent); }
 .filename { overflow-wrap: anywhere; color: var(--secondary); }
 .hint { margin: 2px 0 8px; color: var(--muted); font-size: 13px; line-height: 1.65; }
 .consent { display: flex; align-items: flex-start; gap: 10px; margin: 6px 0 12px; color: var(--ink); font-size: 14px; line-height: 1.55; }

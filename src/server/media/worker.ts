@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { rm, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { createAsset, deleteAsset, getOwnedAsset } from "../content/assets";
+import { getProject } from "../content/projects";
 import { claimNextQueuedJob, claimRunningGenerationJob, expireStaleSubmittingJob,
   listActiveGenerationJobs, releaseGenerationJobLease, renewGenerationJobLease,
   transitionGenerationJob } from "../content/jobs";
@@ -18,7 +19,21 @@ type WorkerDependencies = {
   submitMediaRequest?: typeof submitMediaRequest;
   getMediaTask?: typeof getMediaTask;
   importProviderMedia?: typeof importProviderMedia;
+  spliceTemporalRepair?: typeof spliceTemporalRepair;
 };
+
+function createJobOutputAsset(job: ActiveJob, input: Parameters<typeof createAsset>[1],
+  projectId = job.projectId) {
+  try {
+    return createAsset(job.ownerId, { ...input, projectId });
+  } catch (error) {
+    // Deleting a project clears the job's database reference, but a claimed job
+    // still carries its earlier project ID. Preserve a paid output in the
+    // owner's unassigned library when that project disappeared during work.
+    if (!projectId || getProject(job.ownerId, projectId)) throw error;
+    return createAsset(job.ownerId, { ...input, projectId: null });
+  }
+}
 
 function leaseHeartbeat(job: ActiveJob, leaseOwner: string, state: "submitting" | "running") {
   const controller = new AbortController();
@@ -81,7 +96,7 @@ async function submit(job: ActiveJob, leaseOwner: string, dependencies: WorkerDe
     const accepted = await (dependencies.submitMediaRequest ?? submitMediaRequest)(
       request, { signal });
     transitionGenerationJob(job.ownerId, job.id, {
-      state: "running", externalId: accepted.providerTaskId, leaseOwner
+      state: "running", externalId: accepted.providerQueueReference ?? accepted.providerTaskId, leaseOwner
     });
   } catch (error) {
     const failed = transitionGenerationJob(job.ownerId, job.id, {
@@ -114,9 +129,9 @@ async function submitStoryboard(job: ActiveJob, leaseOwner: string): Promise<voi
       shots: sources, aspectRatio: input.aspectRatio, outputPath,
       workDir: mediaPath(`storyboards/tmp/${job.id}`), signal
     });
-    const asset = createAsset(job.ownerId, {
+    const asset = createJobOutputAsset(job, {
       kind: "video", source: "generation", mimeType: "video/mp4",
-      sizeBytes: rendered.sizeBytes, storageKey: outputKey, projectId: job.projectId
+      sizeBytes: rendered.sizeBytes, storageKey: outputKey
     });
     outputAssetId = asset.id;
     const finished = transitionGenerationJob(job.ownerId, job.id, {
@@ -159,16 +174,16 @@ async function completeRepair(job: ActiveJob, leaseOwner: string,
   let completed = false;
   let outputAssetId: string | null = null;
   try {
-    await spliceTemporalRepair({
+    await (dependencies.spliceTemporalRepair ?? spliceTemporalRepair)({
       plan,
       repairedContextPath: mediaPath(downloaded.storageKey),
       outputPath
     }, videoToolPaths());
     const storageKey = relative(root, outputPath).split(sep).join("/");
-    const asset = createAsset(job.ownerId, {
+    const asset = createJobOutputAsset(job, {
       kind: "video", source: "generation", mimeType: "video/mp4",
       sizeBytes: (await stat(outputPath)).size, storageKey
-    });
+    }, source.projectId);
     outputAssetId = asset.id;
     const finished = transitionGenerationJob(job.ownerId, job.id, {
       state: "succeeded",
@@ -244,7 +259,7 @@ async function pollWithLease(job: ActiveJob, leaseOwner: string,
     for (const output of task.assets) {
       const stored = await (dependencies.importProviderMedia ?? importProviderMedia)(output.url, output.kind);
       try {
-        const asset = createAsset(job.ownerId, { ...stored, source: "generation" });
+        const asset = createJobOutputAsset(job, { ...stored, source: "generation" });
         saved.push({ id: asset.id, storageKey: asset.storageKey, kind: asset.kind as "image" | "video" | "audio", mimeType: asset.mimeType });
       } catch (error) {
         await deletePrivateFile(stored.storageKey);

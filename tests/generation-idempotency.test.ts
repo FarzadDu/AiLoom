@@ -22,3 +22,12 @@ test("pending request reuse requires identical input and valid UUID", () => {
   assert.equal(parsePendingGeneration(JSON.stringify({ identity: "another", key }), identity), null);
   assert.equal(parsePendingGeneration(JSON.stringify({ identity, key: "bad" }), identity), null);
 });
+
+test("project assignment changes media request identity", () => {
+  const input = { modelId: "fal-ai/flux-2-pro", operation: "text_to_image", prompt: "A kite" };
+  const unfiled = generationRequestIdentity("/api/generations", { ...input, projectId: null });
+  const first = generationRequestIdentity("/api/generations", { ...input, projectId: "66e79992-3fda-44e9-b909-b3ec5cb09685" });
+  const second = generationRequestIdentity("/api/generations", { ...input, projectId: "79a833da-13f7-451e-aac9-62605704bf36" });
+  assert.notEqual(unfiled, first);
+  assert.notEqual(first, second);
+});

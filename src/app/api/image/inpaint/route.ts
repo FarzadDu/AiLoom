@@ -3,7 +3,9 @@ import { z } from "zod";
 import { getCurrentUser, mutationOriginAllowed } from "@/server/auth/access";
 import { getOwnedAsset } from "@/server/content/assets";
 import { createGenerationJob, GenerationIdempotencyConflictError, getGenerationJob } from "@/server/content/jobs";
+import { getProject } from "@/server/content/projects";
 import { publicJob } from "@/server/content/public-job";
+import { ContentAccessError } from "@/server/content/shared";
 import { imageDimensions, inpaintDimensionsAllowed } from "@/server/media/image-dimensions";
 import { prepareMediaRequest } from "@/server/media/service";
 import { signedAssetUrl } from "@/server/storage/asset-access";
@@ -15,7 +17,8 @@ export const runtime = "nodejs";
 const MODEL = "wavespeed-ai/z-image/turbo-inpaint";
 const requestSchema = z.strictObject({
   sourceAssetId: z.uuid(), maskAssetId: z.uuid(),
-  prompt: z.string().trim().min(1).max(4000)
+  prompt: z.string().trim().min(1).max(4000),
+  projectId: z.uuid().nullable().optional()
 }).refine(value => value.sourceAssetId !== value.maskAssetId, {
   path: ["maskAssetId"], message: "The mask must be separate from the source image."
 });
@@ -39,6 +42,7 @@ function replay(ownerId: string, key: string, input: InpaintInput): Response | n
   if (!existing) return null;
   const payload = existing.input;
   if (existing.kind !== "edit" || existing.provider !== "wavespeed" || existing.providerModel !== MODEL ||
+    existing.projectId !== (input.projectId ?? null) ||
     !payload || typeof payload !== "object" || Array.isArray(payload) ||
     payload.modelId !== MODEL || payload.operation !== "image_inpaint" || payload.prompt !== input.prompt ||
     !matchesPrivateAssetUrl(payload.imageUrl, input.sourceAssetId) ||
@@ -68,6 +72,9 @@ export async function POST(request: Request) {
   const parsed = await parseBoundedJson(request, requestSchema, 12_000, "Invalid inpaint request.");
   if (!parsed.success) return parsed.response;
   const input = parsed.data;
+  if (input.projectId && !getProject(current.id, input.projectId)) {
+    return Response.json({ error: "Project not found." }, { status: 404 });
+  }
   const previous = replay(current.id, key, input);
   if (previous) return previous;
   const source = getOwnedAsset(current.id, input.sourceAssetId);
@@ -99,6 +106,7 @@ export async function POST(request: Request) {
     const prepared = prepareMediaRequest(payload);
     const job = createGenerationJob(current.id, {
       kind: "edit", provider: prepared.provider, providerModel: MODEL, payload,
+      projectId: input.projectId,
       idempotencyKey: key,
       costEstimateMicrosUsd: prepared.priceEstimate ? Math.round(prepared.priceEstimate.amountUsd * 1_000_000) : null
     });
@@ -106,6 +114,9 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof GenerationIdempotencyConflictError) {
       return replay(current.id, key, input) ?? Response.json({ error: "Request key conflict." }, { status: 409 });
+    }
+    if (error instanceof ContentAccessError) {
+      return Response.json({ error: "Project not found." }, { status: 404 });
     }
     return Response.json({ error: "Could not prepare the private image edit." }, { status: 500 });
   }

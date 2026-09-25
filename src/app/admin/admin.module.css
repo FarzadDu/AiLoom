@@ -26,12 +26,12 @@
 .cardHeading h2, .recordsHeading h2 { margin: 0; font-size: 19px; font-weight: 680; letter-spacing: -.03em; }
 .form { display: grid; gap: 10px; }
 .form label { color: var(--secondary); font-size: 13px; font-weight: 680; }
-.form > input, .form select, .daysInput, .linkLine input { width: 100%; min-height: 48px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 10px; outline: none; background: var(--surface); color: var(--ink); font-size: 14px; }
-.form > input:focus, .form select:focus, .daysInput:focus-within { border-color: var(--accent); }
+.form > input, .daysInput, .linkLine input { width: 100%; min-height: 48px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 10px; outline: none; background: var(--surface); color: var(--ink); font-size: 14px; }
+.form > input:focus, .daysInput:focus-within { border-color: var(--accent); }
 .form > input::placeholder { color: var(--muted); }
 .formRow { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 9px; }
 .formRow > div { display: grid; align-content: start; gap: 10px; }
-.form select { appearance: auto; }
+.formRow :global(.ailoom-select-trigger) { min-height: 48px; }
 .daysInput { display: flex; align-items: center; gap: 8px; padding-inline-end: 13px; }
 .daysInput input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); }
 .daysInput span { color: var(--muted); font-size: 13px; white-space: nowrap; }

@@ -6,6 +6,8 @@ import { responseError, type SessionUser } from "./chat-api";
 import { resolveTemplatePrompt, specialistsFromPayload, templateFromPayload, templatesFromPayload, type ExploreStep, type ExploreTemplate, type SpecialistProfile } from "./content-api";
 import { copy, modelOptions, specialistCatalog, type Locale, type View } from "./workspace-data";
 import { createWorkflowRun, executeWorkflow, restoreWorkflowRun, resumeWorkflowRun, supportsWorkflowModel, validateWorkflowRun, type WorkflowAsset, type WorkflowRun } from "./explore-runner";
+import { localizeStarterTemplate } from "./starter-template-locale";
+import { ThemedSelect } from "./themed-select";
 
 const stepIcons: Record<ExploreStep["kind"], LucideIcon> = {
   chat: MessageCircle, image: ImageIcon, video: Video, audio: Volume2
@@ -138,7 +140,8 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
     return () => controller.abort();
   }, [user?.id, t.exploreLoadError]);
 
-  const selected = templates.find(item => item.id === selectedId) ?? templates[0] ?? null;
+  const visibleTemplates = templates.map(item => localizeStarterTemplate(item, locale));
+  const selected = visibleTemplates.find(item => item.id === selectedId) ?? visibleTemplates[0] ?? null;
   const selectedStep = selected?.definition.steps.find(step => step.id === selectedStepId) ?? selected?.definition.steps[0] ?? null;
   const isOwner = Boolean(user && selected?.ownerId === user.id);
   useEffect(() => { setInputValues({}); setInputFiles({}); setInputError(""); }, [selected?.id]);
@@ -303,7 +306,7 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
       <div className="browse-layout">
         <div className="workflow-list" aria-label={t.exploreEyebrow}>
           {!loaded && <p className="content-empty" role="status">{t.loadingWorkflows}</p>}
-          {templates.map(item => {
+          {visibleTemplates.map(item => {
             const Icon = stepIcons[item.definition.steps[0].kind];
             return <button type="button" key={item.id} className="workflow-row" aria-pressed={selected?.id === item.id && !draft} onClick={() => { setSelectedId(item.id); setSelectedStepId(null); setDraft(null); setSaveError(""); setInputValues({}); setInputFiles({}); setInputError(""); }}><span className="workflow-icon"><Icon size={22} aria-hidden="true" /></span><span><strong>{item.title}</strong><small>{item.description || item.category} · {item.definition.steps.length} {t.stepCount} · {item.visibility === "public" ? t.workflowPublic : t.workflowPrivate}</small></span><ArrowRight size={17} aria-hidden="true" /></button>;
           })}
@@ -320,7 +323,7 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
               <div className="editor-step-head"><strong>{String(index + 1).padStart(2, "0")}</strong><button type="button" aria-label={`${t.workflowRemoveInput} ${index + 1}`} onClick={() => setDraft(previous => previous && { ...previous, inputs: previous.inputs.filter((_, position) => position !== index) })}><X size={16} />{t.workflowRemoveInput}</button></div>
               <label className="editor-field"><span>{t.workflowInputKey}</span><input required pattern="[A-Za-z][A-Za-z0-9_]*" maxLength={80} value={input.key} onChange={event => updateInput(index, { key: event.target.value })} /></label>
               <label className="editor-field"><span>{t.workflowInputLabel}</span><input required maxLength={120} value={input.label} onChange={event => updateInput(index, { label: event.target.value })} /></label>
-              <label className="editor-field"><span>{t.workflowInputType}</span><select value={input.type} onChange={event => updateInput(index, { type: event.target.value as typeof input.type })}>{(["text", "image", "video", "audio", "file"] as const).map(type => <option key={type} value={type}>{type === "text" ? t.outputTabs.text : type === "file" ? t.attach : t.nav[type]}</option>)}</select></label>
+              <div className="editor-field"><span>{t.workflowInputType}</span><ThemedSelect ariaLabel={t.workflowInputType} value={input.type} onValueChange={value => updateInput(index, { type: value as typeof input.type })}>{(["text", "image", "video", "audio", "file"] as const).map(type => <option key={type} value={type}>{type === "text" ? t.outputTabs.text : type === "file" ? t.attach : t.nav[type]}</option>)}</ThemedSelect></div>
               <label className="toggle-field"><input type="checkbox" checked={input.required} onChange={event => updateInput(index, { required: event.target.checked })} /><span>{t.workflowInputRequired}</span></label>
             </div>)}
             {draft.inputs.length < 20 && <button className="outline-action editor-add-step" type="button" onClick={() => setDraft(previous => previous && { ...previous, inputs: [...previous.inputs, { key: `input${previous.inputs.length + 1}`, label: "", type: "text", required: true }] })}><Plus size={16} />{t.workflowAddInput}</button>}
@@ -328,8 +331,8 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
             {draft.steps.map((step, index) => <div className="editor-step" key={step.id}>
               <div className="editor-step-head"><strong>{String(index + 1).padStart(2, "0")}</strong><button type="button" aria-label={`${t.workflowRemoveStep} ${index + 1}`} disabled={draft.steps.length === 1} onClick={() => setDraft(previous => previous && { ...previous, steps: previous.steps.filter(item => item.id !== step.id) })}><X size={16} />{t.workflowRemoveStep}</button></div>
               <label className="editor-field"><span>{t.workflowStepTitle}</span><input required maxLength={120} value={step.title} placeholder={t.workflowStepPlaceholder} onChange={event => updateStep(step.id, { title: event.target.value })} /></label>
-              <label className="editor-field"><span>{t.workflowStepKind}</span><select value={step.kind} onChange={event => updateStep(step.id, { kind: event.target.value as ExploreStep["kind"], modelId: undefined })}>{(["chat", "image", "video", "audio"] as const).map(kind => <option value={kind} key={kind}>{t.nav[kind]}</option>)}</select></label>
-              <label className="editor-field"><span>{t.workflowStepModel}</span><select value={step.modelId ?? ""} onChange={event => updateStep(step.id, { modelId: event.target.value || undefined })}><option value="">{t.automatic}</option>{modelOptions[step.kind].filter(option => supportsWorkflowModel(step.kind, option.id)).map(option => <option value={option.id} key={option.id}>{option.label}</option>)}</select></label>
+              <div className="editor-field"><span>{t.workflowStepKind}</span><ThemedSelect ariaLabel={t.workflowStepKind} value={step.kind} onValueChange={value => updateStep(step.id, { kind: value as ExploreStep["kind"], modelId: undefined })}>{(["chat", "image", "video", "audio"] as const).map(kind => <option value={kind} key={kind}>{t.nav[kind]}</option>)}</ThemedSelect></div>
+              <div className="editor-field"><span>{t.workflowStepModel}</span><ThemedSelect ariaLabel={t.workflowStepModel} value={step.modelId ?? ""} onValueChange={value => updateStep(step.id, { modelId: value || undefined })}><option value="">{t.automatic}</option>{modelOptions[step.kind].filter(option => supportsWorkflowModel(step.kind, option.id)).map(option => <option value={option.id} key={option.id}>{option.label}</option>)}</ThemedSelect></div>
               <label className="editor-field"><span>{t.workflowStepPrompt}</span><textarea required maxLength={20000} rows={3} value={step.prompt} placeholder={t.workflowPromptPlaceholder} onChange={event => updateStep(step.id, { prompt: event.target.value })} /></label>
             </div>)}
             {draft.steps.length < 30 && <button className="outline-action editor-add-step" type="button" onClick={() => setDraft(previous => previous && { ...previous, steps: [...previous.steps, newStep()] })}><Plus size={16} />{t.workflowAddStep}</button>}

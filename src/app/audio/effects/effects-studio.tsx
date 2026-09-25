@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { ThemedSelect } from "@/components/themed-select";
 import styles from "./effects.module.css";
 
 type Locale = "en" | "fa";
@@ -226,9 +227,9 @@ export default function EffectsStudio({ signedIn, name, userId }: {
             <p className={styles.label}>{t.examples}</p>
             <div className={styles.presets}>{presets.map(item => <button key={item.en} type="button" onClick={() => setPrompt(item.prompt)}>{item[locale]}</button>)}</div>
             <div className={styles.settings}>
-              <label htmlFor="effect-duration">{t.duration}<select id="effect-duration" value={durationSec} onChange={event => setDurationSec(Number(event.target.value))}>
-                {[5, 10, 20, 30].map(seconds => <option key={seconds} value={seconds}>{seconds} s</option>)}</select></label>
-              <label htmlFor="effect-format">{t.format}<select id="effect-format" value={outputFormat} onChange={event => setOutputFormat(event.target.value as "mp3" | "wav")}> <option value="mp3">MP3</option><option value="wav">WAV</option></select></label>
+              <label htmlFor="effect-duration">{t.duration}<ThemedSelect id="effect-duration" value={durationSec} onValueChange={value => setDurationSec(Number(value))}>
+                {[5, 10, 20, 30].map(seconds => <option key={seconds} value={seconds}>{seconds} s</option>)}</ThemedSelect></label>
+              <label htmlFor="effect-format">{t.format}<ThemedSelect id="effect-format" value={outputFormat} onValueChange={value => setOutputFormat(value as "mp3" | "wav")}><option value="mp3">MP3</option><option value="wav">WAV</option></ThemedSelect></label>
             </div>
             <div className={styles.settings}>
               <label htmlFor="effect-negative">{t.avoid}<input id="effect-negative" value={negativePrompt} onChange={event => setNegativePrompt(event.target.value)} maxLength={1000} placeholder={t.avoidPlaceholder} /></label>

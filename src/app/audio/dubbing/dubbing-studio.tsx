@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { DUBBING_LANGUAGES } from "@/server/dubbing/languages";
+import { ThemedSelect } from "@/components/themed-select";
 import styles from "./dubbing.module.css";
 
 type Locale = "en" | "fa";
@@ -218,24 +219,24 @@ export default function DubbingStudio({ signedIn, name }: { signedIn: boolean; n
             <h2>{t.newDub}</h2>
             <form onSubmit={event => void submit(event)}>
               <label htmlFor="dub-source">{t.source}</label>
-              <select id="dub-source" value={selectedId} onChange={event => setSourceId(event.target.value)} disabled={Boolean(busy)}>
+              <ThemedSelect id="dub-source" value={selectedId} onValueChange={setSourceId} disabled={Boolean(busy)}>
                 {!assets.length && <option value="">{t.noSource}</option>}
                 {assets.map(asset => <option key={asset.id} value={asset.id}>{asset.originalName || asset.id.slice(0, 8)} · {asset.kind === "video" ? t.sourceVideo : t.sourceAudio}</option>)}
-              </select>
+              </ThemedSelect>
               <label htmlFor="dub-upload">{t.upload}</label>
               <input id="dub-upload" type="file" accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,video/mp4,video/webm"
                 onChange={event => { const file = event.target.files?.[0]; if (file) void uploadSource(file); event.currentTarget.value = ""; }} disabled={Boolean(busy)} />
               <p className={styles.hint}>{busy === "upload" ? t.uploading : t.uploadHint}</p>
               <div className={styles.languages}>
                 <div><label htmlFor="dub-source-language">{t.sourceLanguage}</label>
-                  <select id="dub-source-language" value={sourceLanguage} onChange={event => setSourceLanguage(event.target.value)} disabled={Boolean(busy)}>
+                  <ThemedSelect id="dub-source-language" value={sourceLanguage} onValueChange={setSourceLanguage} disabled={Boolean(busy)}>
                     <option value="">{t.auto}</option>
                     {orderedLanguages.map(code => <option key={code} value={code}>{languageName(code, locale)}</option>)}
-                  </select></div>
+                  </ThemedSelect></div>
                 <div><label htmlFor="dub-target-language">{t.targetLanguage}</label>
-                  <select id="dub-target-language" value={targetLanguage} onChange={event => setTargetLanguage(event.target.value)} disabled={Boolean(busy)}>
+                  <ThemedSelect id="dub-target-language" value={targetLanguage} onValueChange={setTargetLanguage} disabled={Boolean(busy)}>
                     {orderedLanguages.map(code => <option key={code} value={code}>{languageName(code, locale)}</option>)}
-                  </select></div>
+                  </ThemedSelect></div>
               </div>
               <button className={styles.action} type="submit" disabled={Boolean(busy) || !selectedId}>{busy === "dub" ? t.working : t.submit}</button>
             </form>

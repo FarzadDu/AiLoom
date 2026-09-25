@@ -1,5 +1,6 @@
 import { getCurrentUser, mutationOriginAllowed } from "@/server/auth/access";
 import { createGenerationJob, GenerationIdempotencyConflictError, listGenerationJobs, type JobKind } from "@/server/content/jobs";
+import { ContentAccessError } from "@/server/content/shared";
 import { prepareMediaRequest, MediaRequestError } from "@/server/media/service";
 import type { JsonValue } from "@/server/content/types";
 import { publicJob } from "@/server/content/public-job";
@@ -40,8 +41,17 @@ export async function POST(request: Request) {
     }
     return Response.json({ error: "Invalid generation request." }, { status: 400 });
   }
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return Response.json({ error: "Invalid generation request." }, { status: 400 });
+  }
+  const parsedProjectId = z.uuid().nullable().optional().safeParse(input.projectId);
+  if (!parsedProjectId.success) {
+    return Response.json({ error: "Invalid project ID." }, { status: 400 });
+  }
+  // Project selection belongs to our job metadata, never the provider payload.
+  const { projectId: _projectId, ...payload } = input;
   try {
-    const prepared = prepareMediaRequest(input);
+    const prepared = prepareMediaRequest(payload);
     if (prepared.operation === "image_inpaint" || prepared.operation === "character_to_image") {
       return Response.json({ error: "Use the private image reference endpoint." }, { status: 422 });
     }
@@ -49,7 +59,8 @@ export async function POST(request: Request) {
       kind: jobKind(prepared.operation),
       provider: prepared.provider,
       providerModel: prepared.modelId,
-      payload: input,
+      projectId: parsedProjectId.data,
+      payload,
       idempotencyKey: idempotencyKey.toLowerCase(),
       costEstimateMicrosUsd: prepared.priceEstimate
         ? Math.max(0, Math.round(prepared.priceEstimate.amountUsd * 1_000_000)) : null
@@ -58,6 +69,9 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof GenerationIdempotencyConflictError) {
       return Response.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof ContentAccessError) {
+      return Response.json({ error: "Project not found." }, { status: 404 });
     }
     if (error instanceof MediaRequestError) {
       return Response.json({ error: error.message, fields: error.fields }, { status: 422 });

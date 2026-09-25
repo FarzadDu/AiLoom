@@ -66,6 +66,7 @@ test("private character route checks ownership, replays one job and reloads in I
   const { user } = await import("../src/server/db/schema");
   const { createInvite } = await import("../src/server/auth/invites");
   const { createAsset } = await import("../src/server/content/assets");
+  const { createProject } = await import("../src/server/content/projects");
   const { getGenerationJob } = await import("../src/server/content/jobs");
   const { refreshPrivateAssetUrls } = await import("../src/server/media/private-references");
   const { savePrivateFile } = await import("../src/server/storage/private-files");
@@ -88,6 +89,8 @@ test("private character route checks ownership, replays one job and reloads in I
     const now = new Date();
     getDb().insert(user).values({ id: otherId, name: "Other", email: "character-other@example.test",
       role: "user", emailVerified: true, createdAt: now, updatedAt: now }).run();
+    const project = createProject(ownerId, { name: "Character images" });
+    const foreignProject = createProject(otherId, { name: "Private" });
     const makeAsset = async (owner: string, bytes: Buffer, mimeType = "image/png", sizeBytes?: number) => {
       const saved = await savePrivateFile(bytes, mimeType);
       return createAsset(owner, { ...saved, sizeBytes: sizeBytes ?? saved.sizeBytes,
@@ -98,7 +101,7 @@ test("private character route checks ownership, replays one job and reloads in I
     const oversizeAssetId = await makeAsset(ownerId, IMAGE, "image/png", 10_000_001);
     const key = randomUUID();
     const input = { sourceAssetId: ownAssetId, prompt: "Same person walking in rain",
-      imageSize: "portrait_4_3", renderingSpeed: "BALANCED" };
+      imageSize: "portrait_4_3", renderingSpeed: "BALANCED", projectId: project.id };
     const send = (value: unknown, requestKey: string = key, headers: Record<string, string> = {}) =>
       characterRoute.POST(new Request("http://localhost:3000/api/image/character", {
         method: "POST", headers: { origin: "http://localhost:3000", cookie,
@@ -109,6 +112,8 @@ test("private character route checks ownership, replays one job and reloads in I
       method: "POST", body: JSON.stringify(input) }))).status, 401);
     assert.equal((await send(input, key, { origin: "https://other.example.test" })).status, 403);
     assert.equal((await send(input, "bad-key")).status, 400);
+    assert.equal((await send({ ...input, projectId: "invalid" }, randomUUID())).status, 400);
+    assert.equal((await send({ ...input, projectId: foreignProject.id }, randomUUID())).status, 404);
     assert.equal((await send({ ...input, sourceAssetId: foreignAssetId })).status, 404);
     assert.equal((await send({ ...input, sourceAssetId: oversizeAssetId })).status, 422);
     assert.equal((await send({ ...input, imageSize: "invalid" })).status, 400);
@@ -127,7 +132,9 @@ test("private character route checks ownership, replays one job and reloads in I
     const stored = getGenerationJob(ownerId, key);
     assert.equal(stored?.providerModel, MODEL);
     assert.equal(stored?.kind, "image");
+    assert.equal(stored?.projectId, project.id);
     assert.ok(stored?.input && typeof stored.input === "object" && "imageUrl" in stored.input);
+    assert.equal("projectId" in (stored?.input as Record<string, unknown>), false);
     const originalReference = (stored.input as { imageUrl: string }).imageUrl;
     const refreshed = refreshPrivateAssetUrls(ownerId, stored.input,
       (owner, id) => owner === ownerId && id === ownAssetId) as { imageUrl: string };
@@ -144,6 +151,7 @@ test("private character route checks ownership, replays one job and reloads in I
     assert.equal((await replayed.json()).job.id, key);
     assert.equal(probeCount, 1);
     assert.equal((await send({ ...input, prompt: "Changed scene" })).status, 409);
+    assert.equal((await send({ ...input, projectId: null })).status, 409);
     assert.equal((await send({ ...input, sourceAssetId: foreignAssetId })).status, 409);
     const raw = await generationsRoute.POST(new Request("http://localhost:3000/api/generations", {
       method: "POST", headers: { origin: "http://localhost:3000", cookie,

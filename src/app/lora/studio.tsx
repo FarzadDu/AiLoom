@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { ThemedSelect } from "@/components/themed-select";
 import styles from "./studio.module.css";
 
 type Locale = "en" | "fa";
@@ -214,9 +215,9 @@ export default function LoraStudio({ signedIn, isAdmin }: { signedIn: boolean; i
           </form><ul className={styles.smallList}>{datasets.map(dataset => <li key={dataset.id}>{dataset.imageCount} images · {(dataset.sizeBytes / 1048576).toFixed(1)} MB</li>)}</ul></section>
           <section className={styles.card}><h2>{t.train}</h2><form onSubmit={trainModel}>
             <label htmlFor="lora-name">{t.modelName}</label><input id="lora-name" value={name} maxLength={80} onChange={event => setName(event.target.value)} placeholder={t.modelNamePlaceholder} />
-            <label htmlFor="lora-dataset">{t.dataset}</label><select id="lora-dataset" value={selectedDataset} onChange={event => setDatasetId(event.target.value)}>
+            <label htmlFor="lora-dataset">{t.dataset}</label><ThemedSelect id="lora-dataset" value={selectedDataset} onValueChange={setDatasetId}>
               {datasets.map(dataset => <option key={dataset.id} value={dataset.id}>{dataset.imageCount} images · {dataset.id.slice(0, 8)}</option>)}
-            </select>
+            </ThemedSelect>
             <label htmlFor="lora-trigger">{t.trigger}</label><input id="lora-trigger" value={triggerWord} maxLength={80} onChange={event => setTriggerWord(event.target.value)} />
             <p className={styles.hint}>{t.triggerHint}</p><div className={styles.row}>
               <span><label htmlFor="lora-steps">{t.steps}</label><input id="lora-steps" type="number" min={500} max={10000} value={steps} onChange={event => setSteps(Number(event.target.value))} /></span>
@@ -225,14 +226,14 @@ export default function LoraStudio({ signedIn, isAdmin }: { signedIn: boolean; i
             {!datasets.length && <p className={styles.hint}>{t.noDatasets}</p>}
           </form></section>
           <section className={styles.card}><h2>{t.generate}</h2><form onSubmit={generateImage}>
-            <label htmlFor="lora-model">{t.model}</label><select id="lora-model" value={selectedModel} onChange={event => setModelId(event.target.value)}>
+            <label htmlFor="lora-model">{t.model}</label><ThemedSelect id="lora-model" value={selectedModel} onValueChange={setModelId}>
               {readyModels.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
-            </select>
+            </ThemedSelect>
             <label htmlFor="lora-prompt">{t.prompt}</label><textarea id="lora-prompt" value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={t.promptPlaceholder} maxLength={4000} />
             <div className={styles.row}><span><label htmlFor="lora-scale">{t.scale}: {scale.toFixed(2)}</label><input id="lora-scale" type="range" min={0} max={4} step={0.05} value={scale} onChange={event => setScale(Number(event.target.value))} /></span>
-              <span><label htmlFor="lora-size">{t.size}</label><select id="lora-size" value={size} onChange={event => setSize(event.target.value)}>
+              <span><label htmlFor="lora-size">{t.size}</label><ThemedSelect id="lora-size" value={size} onValueChange={setSize}>
                 {["512*512", "768*768", "1024*1024", "768*1024", "1024*768"].map(value => <option key={value} value={value}>{value.replace("*", " × ")}</option>)}
-              </select></span></div>
+              </ThemedSelect></span></div>
             <button className={styles.action} disabled={Boolean(busy) || !readyModels.length}>{busy === "generate" ? t.working : t.generateButton}</button>
             {!readyModels.length && <p className={styles.hint}>{t.noReady}</p>}
           </form></section>

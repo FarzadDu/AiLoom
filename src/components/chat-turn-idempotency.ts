@@ -47,3 +47,25 @@ export function samePendingTurn(
   };
   return withoutPlacement(pending.input) === withoutPlacement(candidate);
 }
+
+/** Recover a completed earlier turn without replacing the user's new destination. */
+export async function reconcileCompletedChatTurn(
+  conversationId: string,
+  sameTurn: boolean,
+  selectedConversationId: string | null,
+  actions: {
+    restoreOriginal: (id: string) => Promise<void>;
+    refreshCurrent: (id: string) => Promise<void>;
+    clearPending: () => void;
+    refreshHistory: () => void;
+  }
+): Promise<"replayed" | "continue"> {
+  if (sameTurn) {
+    await actions.restoreOriginal(conversationId);
+    return "replayed";
+  }
+  if (selectedConversationId === conversationId) await actions.refreshCurrent(conversationId);
+  actions.clearPending();
+  actions.refreshHistory();
+  return "continue";
+}

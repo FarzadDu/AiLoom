@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { ThemedSelect } from "@/components/themed-select";
 import styles from "./voices.module.css";
 
 type Locale = "en" | "fa";
@@ -228,7 +229,7 @@ export default function VoiceStudio({ signedIn, name }: { signedIn: boolean; nam
           </section>
           <section className={styles.card} aria-labelledby="speech-title"><h2 id="speech-title">{t.speech}</h2>
             <form onSubmit={event => void createSpeech(event)}>
-              <label htmlFor="speech-voice">{t.selectVoice}</label><select id="speech-voice" value={effectiveVoiceId} onChange={event => setSelectedVoice(event.target.value)} disabled={!readyVoices.length}>{readyVoices.length ? readyVoices.map(voice => <option key={voice.id} value={voice.id}>{voice.name}</option>) : <option value="">{t.noReady}</option>}</select>
+              <label htmlFor="speech-voice">{t.selectVoice}</label><ThemedSelect id="speech-voice" value={effectiveVoiceId} onValueChange={setSelectedVoice} disabled={!readyVoices.length}>{readyVoices.length ? readyVoices.map(voice => <option key={voice.id} value={voice.id}>{voice.name}</option>) : <option value="">{t.noReady}</option>}</ThemedSelect>
               <label htmlFor="speech-text">{t.text}</label><textarea id="speech-text" value={spokenText} onChange={event => setSpokenText(event.target.value)} maxLength={5000} dir={/[\u0590-\u08ff]/.test(spokenText) ? "rtl" : "ltr"} placeholder={t.textPlaceholder} rows={7} />
               <p className={styles.hint}>{t.providerNote}</p>
               <button className={styles.action} type="submit" disabled={Boolean(busy) || !readyVoices.length}>{busy === "speech" ? t.working : t.generate}</button>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ThemedSelect } from "@/components/themed-select";
 import styles from "./captions.module.css";
 
 type Locale = "en" | "fa";
@@ -193,13 +194,13 @@ export default function CaptionStudio({ signedIn }: { signedIn: boolean }) {
         <section className={styles.card} aria-label={t.source}>
           <div className={styles.sectionHead}><span>01</span><h2>{t.source}</h2></div>
           <label className={styles.label} htmlFor="caption-source">{t.library}</label>
-          <select id="caption-source" className={styles.select} value={sourceId}
-            onChange={event => { setSourceId(event.target.value); setResult(null); }}>
+          <ThemedSelect id="caption-source" value={sourceId}
+            onValueChange={value => { setSourceId(value); setResult(null); }}>
             <option value="">{t.chooseVideo}</option>
             {assets.map(asset => <option key={asset.id} value={asset.id}>
               {asset.originalName || `${new Date(asset.createdAt).toLocaleDateString(locale)} · ${asset.id.slice(0, 8)}`}
             </option>)}
-          </select>
+          </ThemedSelect>
           {!assets.length && <p className={styles.hint}>{t.noVideo}</p>}
           <label className={styles.fileLabel} htmlFor="caption-video-upload">
             <span className={styles.fileIcon}>＋</span>{uploadBusy ? t.uploading : t.upload}
@@ -214,10 +215,10 @@ export default function CaptionStudio({ signedIn }: { signedIn: boolean }) {
           <div className={styles.sectionHead}><span>02</span><h2>{t.subtitles}</h2></div>
           <div className={styles.formatRow}>
             <label className={styles.label} htmlFor="caption-format">{t.format}</label>
-            <select id="caption-format" className={styles.select} value={format}
-              onChange={event => { setFormat(event.target.value as "srt" | "vtt"); setResult(null); }}>
+            <ThemedSelect id="caption-format" value={format}
+              onValueChange={value => { setFormat(value as "srt" | "vtt"); setResult(null); }}>
               <option value="srt">SRT</option><option value="vtt">WebVTT</option>
-            </select>
+            </ThemedSelect>
           </div>
           <label className={styles.fileLabel} htmlFor="caption-text-upload">
             <span className={styles.fileIcon}>⇧</span>{t.loadFile}
