@@ -21,7 +21,9 @@ test("text chat reserves a paid turn once, replays its saved answer, and blocks 
   const originalFetch = globalThis.fetch;
   const { getDb, getSqlite } = await import("../src/server/db");
   const { createInvite } = await import("../src/server/auth/invites");
-  const { listMessages } = await import("../src/server/content/chat");
+  const { appendMessage, createConversation, listMessages } = await import("../src/server/content/chat");
+  const { createAsset } = await import("../src/server/content/assets");
+  const { savePrivateFile } = await import("../src/server/storage/private-files");
   const authRoute = await import("../src/app/api/auth/[...all]/route");
   const chatRoute = await import("../src/app/api/chat/route");
   try {
@@ -108,6 +110,60 @@ test("text chat reserves a paid turn once, replays its saved answer, and blocks 
     assert.equal((await send(owner.cookie, uncertain)).status, 409);
     assert.equal(providerCalls, callCount);
     assert.equal((await status(other.cookie, uncertain.requestId)).status, 404);
+
+    const attachmentConversation = createConversation(owner.id);
+    for (let index = 1; index <= 3; index++) {
+      const bytes = Buffer.alloc(7_000_000, index);
+      bytes.write("%PDF-", 0, "ascii");
+      const stored = await savePrivateFile(bytes, "application/pdf");
+      const asset = createAsset(owner.id, { ...stored, source: "upload",
+        originalName: `reference-${index}.pdf` });
+      appendMessage(owner.id, attachmentConversation.id, { role: "user", blocks: [
+        { type: "text", text: `Prior question ${index}` },
+        { type: "file", assetId: asset.id }
+      ] });
+      appendMessage(owner.id, attachmentConversation.id, { role: "assistant",
+        blocks: [{ type: "text", text: `Prior answer ${index}` }] });
+    }
+    let providerMessages: Array<{ role: string; content: unknown }> = [];
+    globalThis.fetch = async (_url, init) => {
+      providerCalls++;
+      const body = JSON.parse(String(init?.body)) as { messages: typeof providerMessages };
+      providerMessages = body.messages;
+      return new Response('data: {"choices":[{"delta":{"content":"Follow-up answered"}}]}\n\ndata: [DONE]\n\n',
+        { headers: { "content-type": "text/event-stream" } });
+    };
+    const followUp = await send(owner.cookie, { requestId: randomUUID(),
+      conversationId: attachmentConversation.id, text: "A text-only follow-up" });
+    assert.equal(followUp.status, 200);
+    assert.match(await followUp.text(), /event: done/);
+    const questions = providerMessages.filter(message => message.role === "user");
+    assert.equal(questions.length, 4);
+    for (let index = 1; index <= 3; index++) {
+      assert.ok(questions.some(message => JSON.stringify(message.content).includes(`Prior question ${index}`)));
+    }
+    assert.equal(questions.at(-1)?.content, "A text-only follow-up");
+    const attachedNames = questions.flatMap(message => Array.isArray(message.content)
+      ? message.content.filter((part): part is { type: "file"; file: { filename: string } } =>
+        !!part && typeof part === "object" && part.type === "file")
+        .map(part => part.file.filename) : []);
+    assert.deepEqual(attachedNames, ["reference-2.pdf", "reference-3.pdf"]);
+
+    const currentBytes = Buffer.alloc(8_000_000, 4);
+    currentBytes.write("%PDF-", 0, "ascii");
+    const currentStored = await savePrivateFile(currentBytes, "application/pdf");
+    const currentAsset = createAsset(owner.id, { ...currentStored, source: "upload",
+      originalName: "current.pdf" });
+    const withAttachment = await send(owner.cookie, { requestId: randomUUID(),
+      conversationId: attachmentConversation.id, text: "Check this new file",
+      attachmentIds: [currentAsset.id] });
+    assert.equal(withAttachment.status, 200);
+    assert.match(await withAttachment.text(), /event: done/);
+    const followUpFiles = providerMessages.flatMap(message => Array.isArray(message.content)
+      ? message.content.filter((part): part is { type: "file"; file: { filename: string } } =>
+        !!part && typeof part === "object" && part.type === "file")
+        .map(part => part.file.filename) : []);
+    assert.deepEqual(followUpFiles, ["reference-3.pdf", "current.pdf"]);
   } finally {
     globalThis.fetch = originalFetch;
     getSqlite().close();

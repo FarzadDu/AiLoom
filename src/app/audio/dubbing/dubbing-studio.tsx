@@ -8,7 +8,11 @@ import styles from "./dubbing.module.css";
 type Locale = "en" | "fa";
 type Theme = "light" | "dark";
 type Asset = { id: string; kind: "audio" | "video"; visibility: "private" | "public";
-  originalName: string | null; sizeBytes: number; url: string };
+  originalName: string | null; sizeBytes: number; url: string; createdAt: string };
+type SourceKind = Asset["kind"];
+type SourceCursors = Record<SourceKind, string | null>;
+const SOURCE_KINDS: readonly SourceKind[] = ["audio", "video"];
+const EMPTY_SOURCE_CURSORS: SourceCursors = { audio: null, video: null };
 type Dub = { id: string; sourceAssetId: string; sourceKind: "audio" | "video";
   sourceLanguage: string | null; targetLanguage: string;
   state: "queued" | "submitting" | "running" | "importing" | "ready" | "failed" | "uncertain";
@@ -24,7 +28,8 @@ const copy = {
     signedIn: "Signed in as", refresh: "Refresh", newDub: "Create a dub", source: "Source recording or video",
     choose: "Choose a private file", noSource: "No private audio or video yet. Upload a file to begin.",
     upload: "Upload source", uploadHint: "MP3, WAV, OGG, FLAC, MP4 or WebM · up to 100 MB.",
-    uploading: "Uploading…", sourceLanguage: "Source language", auto: "Detect automatically",
+    uploading: "Uploading…", loadMoreSources: "Load more sources", loadingMoreSources: "Loading sources…",
+    sourceLanguage: "Source language", auto: "Detect automatically",
     targetLanguage: "Target language", submit: "Start dubbing", working: "Queuing…",
     providerNote: "ElevenLabs receives a short-lived private link to the selected file. Creating a dubbing project prepays one language and may charge your provider account immediately.",
     outputNote: "Dubbing v2 returns a lossless audio track, even for video input. A dubbed video file is not produced here. The provider may use a replacement voice if cloning is not permitted. Imported output is limited to 100 MB.",
@@ -47,7 +52,8 @@ const copy = {
     signedIn: "واردشده با نام", refresh: "تازه‌سازی", newDub: "ساخت دوبله", source: "فایل صوتی یا ویدئوی منبع",
     choose: "فایل خصوصی را انتخاب کن", noSource: "هنوز فایل صوتی یا ویدئوی خصوصی نداری. اول یک فایل بارگذاری کن.",
     upload: "بارگذاری منبع", uploadHint: "MP3، WAV، OGG، FLAC، MP4 یا WebM · حداکثر ۱۰۰ مگابایت.",
-    uploading: "در حال بارگذاری…", sourceLanguage: "زبان منبع", auto: "تشخیص خودکار",
+    uploading: "در حال بارگذاری…", loadMoreSources: "نمایش فایل‌های قدیمی‌تر", loadingMoreSources: "در حال بارگذاری فایل‌ها…",
+    sourceLanguage: "زبان منبع", auto: "تشخیص خودکار",
     targetLanguage: "زبان مقصد", submit: "شروع دوبله", working: "در حال ثبت…",
     providerNote: "ElevenLabs لینک خصوصی کوتاه‌مدت فایل انتخاب‌شده را دریافت می‌کند. ساخت پروژه هزینهٔ یک زبان را پیش‌پرداخت می‌کند و ممکن است همان لحظه از حساب سرویس‌دهنده کم شود.",
     outputNote: "Dubbing v2 حتی برای ویدئو فقط یک فایل صوتی بدون افت کیفیت برمی‌گرداند. اینجا فایل ویدئوی دوبله‌شده ساخته نمی‌شود. اگر شبیه‌سازی صدا مجاز نباشد، سرویس‌دهنده ممکن است از صدای جایگزین استفاده کند. سقف ذخیرهٔ خروجی ۱۰۰ مگابایت است.",
@@ -76,11 +82,31 @@ function languageName(code: string, locale: Locale): string {
   catch { return code; }
 }
 
+async function sourcePage(kind: SourceKind, cursor?: string): Promise<{ assets: Asset[]; nextCursor: string | null }> {
+  const params = new URLSearchParams({ kind, limit: "100" });
+  if (cursor) params.set("cursor", cursor);
+  const response = await fetch(`/api/assets?${params}`, { credentials: "same-origin", cache: "no-store" });
+  if (!response.ok) throw new Error("Source library unavailable");
+  const payload = await response.json();
+  const assets = (Array.isArray(payload?.assets) ? payload.assets : []).filter((asset: Asset) =>
+    asset.kind === kind && asset.visibility === "private" &&
+    asset.sizeBytes > 0 && asset.sizeBytes <= 100_000_000);
+  return { assets, nextCursor: typeof payload?.nextCursor === "string" ? payload.nextCursor : null };
+}
+
+function mergeSources(previous: Asset[], incoming: Asset[]): Asset[] {
+  const byId = new Map(previous.map(asset => [asset.id, asset]));
+  for (const asset of incoming) byId.set(asset.id, asset);
+  return [...byId.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
 export default function DubbingStudio({ signedIn, name }: { signedIn: boolean; name: string }) {
   const [locale, setLocale] = useState<Locale>("en");
   const [theme, setTheme] = useState<Theme>("light");
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [sourceCursors, setSourceCursors] = useState<SourceCursors>(EMPTY_SOURCE_CURSORS);
+  const [loadingMoreSources, setLoadingMoreSources] = useState(false);
   const [jobs, setJobs] = useState<Dub[]>([]);
   const [sourceId, setSourceId] = useState("");
   const [sourceLanguage, setSourceLanguage] = useState("");
@@ -90,6 +116,7 @@ export default function DubbingStudio({ signedIn, name }: { signedIn: boolean; n
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const requestRef = useRef<{ sourceId: string; sourceLanguage: string; targetLanguage: string; key: string } | null>(null);
+  const sourceRequestVersion = useRef(0);
   const t = copy[locale];
 
   useEffect(() => {
@@ -111,18 +138,20 @@ export default function DubbingStudio({ signedIn, name }: { signedIn: boolean; n
     try { localStorage.setItem("ailoom.theme", theme); } catch { /* Ignore storage denial. */ }
   }, [theme, preferencesLoaded]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (includeSources = true) => {
     if (!signedIn) return;
+    const version = includeSources ? ++sourceRequestVersion.current : sourceRequestVersion.current;
     try {
-      const [assetResponse, jobResponse] = await Promise.all([
-        fetch("/api/assets?limit=200", { credentials: "same-origin", cache: "no-store" }),
+      const [pages, jobResponse] = await Promise.all([
+        includeSources ? Promise.all(SOURCE_KINDS.map(kind => sourcePage(kind))) : Promise.resolve(null),
         fetch("/api/audio/dubbing", { credentials: "same-origin", cache: "no-store" })
       ]);
-      if (!assetResponse.ok || !jobResponse.ok) throw new Error("Unavailable");
-      const [assetData, jobData] = await Promise.all([assetResponse.json(), jobResponse.json()]);
-      setAssets((Array.isArray(assetData?.assets) ? assetData.assets : []).filter((asset: Asset) =>
-        asset.visibility === "private" && (asset.kind === "audio" || asset.kind === "video") &&
-        asset.sizeBytes > 0 && asset.sizeBytes <= 100_000_000));
+      if (!jobResponse.ok) throw new Error("Unavailable");
+      const jobData = await jobResponse.json();
+      if (pages && version === sourceRequestVersion.current) {
+        setAssets(mergeSources([], pages.flatMap(page => page.assets)));
+        setSourceCursors({ audio: pages[0].nextCursor, video: pages[1].nextCursor });
+      }
       setJobs(Array.isArray(jobData?.jobs) ? jobData.jobs : []);
     } catch { setError(copy[locale].requestFailed); }
   }, [signedIn, locale]);
@@ -130,11 +159,30 @@ export default function DubbingStudio({ signedIn, name }: { signedIn: boolean; n
   const hasActive = jobs.some(job => ["queued", "submitting", "running", "importing"].includes(job.state));
   useEffect(() => {
     if (!signedIn || !hasActive) return;
-    const timer = window.setInterval(() => { void refresh(); }, 10_000);
+    const timer = window.setInterval(() => { void refresh(false); }, 10_000);
     return () => window.clearInterval(timer);
   }, [signedIn, hasActive, refresh]);
   const selectedAsset = useMemo(() => assets.find(asset => asset.id === sourceId) ?? null, [assets, sourceId]);
   const selectedId = selectedAsset ? sourceId : assets[0]?.id ?? "";
+
+  async function loadMoreSources() {
+    if (!signedIn || loadingMoreSources || !SOURCE_KINDS.some(kind => sourceCursors[kind])) return;
+    const version = sourceRequestVersion.current;
+    setLoadingMoreSources(true);
+    setError("");
+    try {
+      const kinds = SOURCE_KINDS.filter(kind => sourceCursors[kind]);
+      const pages = await Promise.all(kinds.map(kind => sourcePage(kind, sourceCursors[kind]!)));
+      if (version !== sourceRequestVersion.current) return;
+      setAssets(previous => mergeSources(previous, pages.flatMap(page => page.assets)));
+      setSourceCursors(previous => {
+        const next = { ...previous };
+        kinds.forEach((kind, index) => { next[kind] = pages[index].nextCursor; });
+        return next;
+      });
+    } catch { setError(t.requestFailed); }
+    finally { setLoadingMoreSources(false); }
+  }
 
   async function uploadSource(file: File) {
     if (busy) return;
@@ -169,7 +217,7 @@ export default function DubbingStudio({ signedIn, name }: { signedIn: boolean; n
       if (!response.ok) throw new Error(await responseError(response));
       const payload = await response.json();
       if (payload?.job?.id) setNotice(copy[locale][payload.job.state as keyof typeof t] as string || t.queued);
-      await refresh();
+      await refresh(false);
     } catch (failure) { setError(failure instanceof Error ? failure.message : t.requestFailed); }
     finally { setBusy(null); }
   }
@@ -184,7 +232,7 @@ export default function DubbingStudio({ signedIn, name }: { signedIn: boolean; n
       if (!response.ok) throw new Error(await responseError(response));
       const payload = await response.json();
       setNotice(payload?.found ? t.running : t.notFound);
-      await refresh();
+      await refresh(false);
     } catch (failure) { setError(failure instanceof Error ? failure.message : t.requestFailed); }
     finally { setCheckingId(null); }
   }
@@ -223,6 +271,10 @@ export default function DubbingStudio({ signedIn, name }: { signedIn: boolean; n
                 {!assets.length && <option value="">{t.noSource}</option>}
                 {assets.map(asset => <option key={asset.id} value={asset.id}>{asset.originalName || asset.id.slice(0, 8)} · {asset.kind === "video" ? t.sourceVideo : t.sourceAudio}</option>)}
               </ThemedSelect>
+              {SOURCE_KINDS.some(kind => sourceCursors[kind]) && <button className={styles.check} type="button"
+                onClick={() => void loadMoreSources()} disabled={loadingMoreSources || Boolean(busy)}>
+                {loadingMoreSources ? t.loadingMoreSources : t.loadMoreSources}
+              </button>}
               <label htmlFor="dub-upload">{t.upload}</label>
               <input id="dub-upload" type="file" accept="audio/mpeg,audio/wav,audio/ogg,audio/flac,video/mp4,video/webm"
                 onChange={event => { const file = event.target.files?.[0]; if (file) void uploadSource(file); event.currentTarget.value = ""; }} disabled={Boolean(busy)} />

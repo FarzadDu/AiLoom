@@ -52,6 +52,29 @@ test("conversations and messages stay scoped to their owner", () => {
   assert.equal(chat.getConversation(alice, conversation.id), null);
 });
 
+test("older conversations and messages remain reachable through cursors", () => {
+  for (let index = 0; index < 55; index++) {
+    chat.createConversation(bob, { title: `History ${index}` });
+  }
+  const newest = chat.listConversations(bob, { limit: 50 });
+  const older = chat.listConversations(bob, { limit: 50, cursor: newest.at(-1)?.id });
+  assert.equal(newest.length, 50);
+  assert.equal(older.length, 5);
+  assert.equal(new Set([...newest, ...older].map(item => item.id)).size, 55);
+  assert.deepEqual(chat.listConversations(alice, { cursor: newest.at(-1)?.id }), []);
+
+  const thread = newest[0];
+  for (let index = 0; index < 105; index++) {
+    chat.appendMessage(bob, thread.id, { role: "user", blocks: [{ type: "text", text: `Turn ${index}` }] });
+  }
+  const latest = chat.listMessages(bob, thread.id, { limit: 100 }) ?? [];
+  const earlier = chat.listMessages(bob, thread.id, { limit: 100, before: latest[0]?.id }) ?? [];
+  assert.equal(latest.length, 100);
+  assert.equal(earlier.length, 5);
+  assert.equal(earlier[0]?.blocks[0]?.type, "text");
+  assert.equal(chat.listMessages(alice, thread.id), null);
+});
+
 test("specialist context survives follow-up turns and reopening without user-text promotion", () => {
   const specialist = chat.createConversation(alice, { title: "Skin question" });
   chat.appendMessage(alice, specialist.id, {

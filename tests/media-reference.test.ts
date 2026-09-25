@@ -20,5 +20,7 @@ test("switching between image edit tools retains a loaded reference", () => {
   const reference = { assetId: "asset-one", mime: "image/png" };
   assert.equal(retainImageReferenceOnModeChange("image", 3, reference), true);
   assert.equal(retainImageReferenceOnModeChange("image", 0, reference), false);
-  assert.equal(retainImageReferenceOnModeChange("video", 3, reference), false);
+  assert.equal(retainImageReferenceOnModeChange("video", 3, reference), true);
+  assert.equal(retainImageReferenceOnModeChange("video", 1, reference), true);
+  assert.equal(retainImageReferenceOnModeChange("video", 2, reference), false);
 });

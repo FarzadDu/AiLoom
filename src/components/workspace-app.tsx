@@ -339,15 +339,17 @@ function ChatLanding({ locale, prompt, setPrompt, model, setModel, modelList, mo
   );
 }
 
-function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId, projects, selectedProjectId, projectBusy, projectError, onSelectProject, onCreateProject, onUpdateProject, onDeleteProject, onMoveConversation, messages, messageLoading, pending, error, showSeparateRequest, previousRequestId, onSeparateRequest, prompt, onPrompt, model, onModel, modelList, mode, onMode, webSearch, onWebSearch, onSend, onSelect, onNew, attachment, onAttach, onRemoveAttachment, inputRef }: {
-  locale: Locale; user: SessionUser; conversations: ConversationSummary[]; historyLoading: boolean; selectedId: string | null;
+function ChatWorkspace({ locale, user, conversations, historyLoading, historyLoadingMore, hasMoreConversations, onLoadMoreConversations, selectedId, projects, selectedProjectId, projectBusy, projectError, onSelectProject, onCreateProject, onUpdateProject, onDeleteProject, onMoveConversation, messages, messageLoading, olderMessagesLoading, hasOlderMessages, onLoadOlderMessages, pending, error, showSeparateRequest, previousRequestId, onSeparateRequest, prompt, onPrompt, model, onModel, modelList, mode, onMode, webSearch, onWebSearch, onSend, onSelect, onNew, attachment, onAttach, onRemoveAttachment, inputRef }: {
+  locale: Locale; user: SessionUser; conversations: ConversationSummary[]; historyLoading: boolean;
+  historyLoadingMore: boolean; hasMoreConversations: boolean; onLoadMoreConversations: () => void; selectedId: string | null;
   projects: ChatProject[]; selectedProjectId: string | null; projectBusy: boolean; projectError: string;
   onSelectProject: (id: string | null) => void;
   onCreateProject: (name: string, description: string | null) => Promise<boolean>;
   onUpdateProject: (id: string, name: string, description: string | null) => Promise<boolean>;
   onDeleteProject: (id: string) => Promise<boolean>;
   onMoveConversation: (id: string, projectId: string | null) => void;
-  messages: ChatMessage[]; messageLoading: boolean; pending: boolean; error: string;
+  messages: ChatMessage[]; messageLoading: boolean; olderMessagesLoading: boolean;
+  hasOlderMessages: boolean; onLoadOlderMessages: () => void; pending: boolean; error: string;
   showSeparateRequest: boolean; previousRequestId: string | null; onSeparateRequest: () => void;
   prompt: string; onPrompt: (value: string) => void; model: string; onModel: (value: string) => void; modelList: ChatModel[];
   mode: "text" | "image"; onMode: (mode: "text" | "image") => void;
@@ -358,7 +360,16 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId
 }) {
   const t = copy[locale];
   const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages]);
+  const lastRenderedThread = useRef<{ id: string | null; firstId: string | null }>({ id: null, firstId: null });
+  useEffect(() => {
+    if (messageLoading) return;
+    const firstId = messages[0]?.id ?? null;
+    const previous = lastRenderedThread.current;
+    if (previous.id !== selectedId || previous.firstId === firstId || !previous.firstId) {
+      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+    lastRenderedThread.current = { id: selectedId, firstId };
+  }, [messages, selectedId, messageLoading]);
   const activeTitle = conversations.find(item => item.id === selectedId)?.title ?? t.newChat;
   const visibleConversations = selectedProjectId
     ? conversations.filter(item => item.projectId === selectedProjectId) : conversations;
@@ -371,7 +382,7 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId
         <ChatProjects locale={locale} projects={projects} selectedId={selectedProjectId} busy={projectBusy || pending} error={projectError}
           onSelect={onSelectProject} onCreate={onCreateProject} onUpdate={onUpdateProject} onDelete={onDeleteProject} />
         <div className="history-list">
-          {historyLoading ? <p className="history-empty">{t.loadingConversations}</p> : visibleConversations.length ? visibleConversations.map(item => <button key={item.id} type="button" aria-current={selectedId === item.id ? "page" : undefined} onClick={() => onSelect(item.id)}><MessageCircle size={16} aria-hidden="true" /><span>{item.title}</span></button>) : <p className="history-empty">{t.noConversations}</p>}
+          {historyLoading ? <p className="history-empty">{t.loadingConversations}</p> : <>{visibleConversations.length ? visibleConversations.map(item => <button key={item.id} type="button" aria-current={selectedId === item.id ? "page" : undefined} onClick={() => onSelect(item.id)}><MessageCircle size={16} aria-hidden="true" /><span>{item.title}</span></button>) : <p className="history-empty">{t.noConversations}</p>}{hasMoreConversations && <button type="button" className="history-more-button" onClick={onLoadMoreConversations} disabled={historyLoadingMore}>{historyLoadingMore ? locale === "fa" ? "در حال بارگذاری…" : "Loading…" : locale === "fa" ? "گفتگوهای قدیمی‌تر" : "Older conversations"}</button>}</>}
         </div>
         <div className="history-user"><span className="user-avatar" aria-hidden="true">{(user.name?.trim()[0] || user.email[0] || "A").toUpperCase()}</span><span><strong>{user.name || user.email}</strong><small>{user.email}</small></span></div>
       </aside>
@@ -384,7 +395,7 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId
         {activeProject?.description && <div className="chat-project-note" title={locale === "fa" ? "در چت متنی برای OpenRouter ارسال می‌شود" : "Sent to OpenRouter in text chats"}><FolderClosed size={14} aria-hidden="true" /><span>{activeProject.description}</span></div>}
         <div className="messages-area" role="log" aria-live="polite" aria-label={t.nav.chat}>
           {messageLoading ? <div className="chat-empty"><p>{t.loadingMessages}</p></div>
-            : messages.length ? <div className="message-stack">{messages.map(message =>
+            : messages.length ? <div className="message-stack">{hasOlderMessages && <button type="button" className="messages-more-button" onClick={onLoadOlderMessages} disabled={olderMessagesLoading}>{olderMessagesLoading ? locale === "fa" ? "در حال بارگذاری…" : "Loading…" : locale === "fa" ? "پیام‌های قدیمی‌تر" : "Older messages"}</button>}{messages.map(message =>
               <div key={message.id} className={`chat-message chat-message-${message.role}${message.status === "error" ? " chat-message-error" : ""}`}>
                 <span className="message-icon" aria-hidden="true">{message.role === "assistant" ? <BrandMark /> : (user.name?.trim()[0] || user.email[0] || "U").toUpperCase()}</span>
                 <div className="message-body">
@@ -591,13 +602,14 @@ function TranscriptionPanel({ locale, signedIn, onLogin }: { locale: Locale; sig
   </>;
 }
 
-function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, preview, onFile, onRemoveFile, onUseReference, onLastFrameChange, availableModels, job, jobError, busy, initialMode, signedIn, onLogin, projects, projectId, onProjectChange }: {
+function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, preview, onFile, onRemoveFile, onUseReference, onLastFrameChange, availableModels, catalogState, onCatalogRetry, job, jobError, busy, initialMode, signedIn, onLogin, projects, projectId, onProjectChange }: {
   view: MediaView; locale: Locale; model: string; onModel: (value: string) => void;
   draft: string; onDraft: (value: string) => void; onSubmit: (options: StudioRequestOptions) => void;
   preview: LocalFile | null; onFile: (event: ChangeEvent<HTMLInputElement>) => void; onRemoveFile: () => void;
   onUseReference: (reference: LocalFile) => void;
   onLastFrameChange: () => void;
-  availableModels: MediaModel[]; job: MediaJob | null; jobError: string; busy: boolean; initialMode: number; signedIn: boolean; onLogin: () => void;
+  availableModels: MediaModel[]; catalogState: "loading" | "ready" | "error"; onCatalogRetry: () => void;
+  job: MediaJob | null; jobError: string; busy: boolean; initialMode: number; signedIn: boolean; onLogin: () => void;
   projects: ChatProject[]; projectId: string | null; onProjectChange: (id: string | null) => void;
 }) {
   const t = copy[locale];
@@ -641,20 +653,8 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
     : view === "video" ? activeMode === 0 ? "text_to_video" : activeMode === 1 ? "reference_to_video" : activeMode === 2 ? "temporal_inpaint" : "first_last_frame_to_video"
     : activeMode === 0 ? "text_to_speech" : activeMode === 1 ? "text_to_music" : null;
   const relevantModels = activeOperation ? availableModels.filter(item => item.operations.includes(activeOperation) || activeOperation === "reference_to_video" && item.operations.includes("image_to_video")) : [];
-  const fallbackModels = modelOptions[view].filter(item => activeOperation === "image_edit" ? item.id === "fal-ai/qwen-image-edit"
-    : activeOperation === "image_inpaint" ? item.id === "wavespeed-ai/z-image/turbo-inpaint"
-    : activeOperation === "character_to_image" ? item.id === "fal-ai/ideogram/character"
-    : activeOperation === "image_upscale" ? item.id === "topaz/upscale/image/precision"
-    : activeOperation === "temporal_inpaint" ? item.id === "fal-ai/ltx-2.3-quality/inpaint"
-    : activeOperation === "first_last_frame_to_video" ? item.id === "fal-ai/veo3.1/fast/first-last-frame-to-video"
-    : activeOperation === "reference_to_video" ? item.id === "bytedance/seedance-2.5/reference-to-video" || item.id === "fal-ai/veo3.1/fast/image-to-video"
-    : activeOperation === "text_to_image" ? item.id !== "fal-ai/qwen-image-edit" && item.id !== "topaz/upscale/image/precision" && item.id !== "wavespeed-ai/z-image/turbo-inpaint" && item.id !== "fal-ai/ideogram/character"
-    : activeOperation === "text_to_video" ? item.id === "fal-ai/veo3.1/fast" || item.id === "bytedance/seedance-2.5/text-to-video"
-    : activeOperation === "text_to_speech" ? item.id === "fal-ai/elevenlabs/tts/eleven-v3"
-    : activeOperation === "text_to_music" ? item.id === "elevenlabs/music/v2" || item.id === "fal-ai/stable-audio-3/small/music/text-to-audio" : true);
-  const selectModels: Array<{ id: string; name: string; provider?: string }> = relevantModels.length
-    ? relevantModels : fallbackModels.map(item => ({ id: item.id, name: item.label }));
-  const effectiveModel = selectModels.some(item => item.id === model) ? model : selectModels[0]?.id || model;
+  const selectModels: Array<{ id: string; name: string; provider?: string }> = relevantModels;
+  const effectiveModel = selectModels.some(item => item.id === model) ? model : selectModels[0]?.id || "";
   const selectedModel = availableModels.find(item => item.id === effectiveModel);
   const videoOperation = activeMode === 1 && selectedModel?.operations.includes("image_to_video")
     ? "image_to_video" : activeOperation || "text_to_video";
@@ -669,7 +669,7 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
     ? videoProfile.durations.includes(5) ? 5 : videoProfile.durations.includes(8) ? 8 : videoProfile.durations[0] : duration;
   const selectedQuality = view === "video" && videoProfile.qualities.length &&
     !videoProfile.qualities.includes(quality as "low" | "standard" | "high" | "ultra") ? "standard" : quality;
-  const imageHasAspect = view === "image" && !["nano-banana-2", "nano-banana-pro"].includes(effectiveModel);
+  const imageHasAspect = view === "image" && Boolean(effectiveModel) && !["nano-banana-2", "nano-banana-pro"].includes(effectiveModel);
   const imageHasQuality = imageHasAspect && (activeOperation === "character_to_image" ||
     selectedModel?.provider === "wavespeed" || effectiveModel.startsWith("openai/gpt-image-2.5/") ||
     selectedAspect === "1:1" && selectedModel?.provider === "fal");
@@ -813,10 +813,8 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
       (preview ? lastFrameRef : fileRef).current?.click();
       return;
     }
-    if (showFirstLast && (!preview?.file || !lastFrame?.file ||
-      preview.file.size === 0 || preview.file.size > 8_000_000 ||
+    if (showFirstLast && (!usableReference(preview, ["image/png", "image/jpeg", "image/webp"], 8_000_000) || !lastFrame?.file ||
       lastFrame.file.size === 0 || lastFrame.file.size > 8_000_000 ||
-      !["image/png", "image/jpeg", "image/webp"].includes(preview.file.type) ||
       !["image/png", "image/jpeg", "image/webp"].includes(lastFrame.file.type))) {
       setLastFrameError(t.firstLastTooLarge);
       return;
@@ -898,16 +896,16 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
           <div className="inspector-divider" />
           <div className="inspector-heading subtle"><span>{t.settings}</span></div>
           <div className="form-field"><label htmlFor="studio-project">{locale === "fa" ? "پروژه" : "Project"}</label><div className="select-shell"><ThemedSelect id="studio-project" value={projectId ?? ""} onValueChange={value => onProjectChange(value || null)} disabled={busy}><option value="">{locale === "fa" ? "بدون پروژه" : "No project"}</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</ThemedSelect></div></div>
-          <div className="form-field"><label htmlFor="studio-model">{t.model} · {selectModels.length}</label><div className="select-shell"><ThemedSelect id="studio-model" value={effectiveModel} onValueChange={onModel} disabled={!selectModels.length}>{selectModels.map(option => <option key={option.id} value={option.id}>{option.name}{option.provider ? ` · ${option.provider === "kie" ? "Kie" : option.provider === "fal" ? "fal" : "WaveSpeed"}` : ""}</option>)}</ThemedSelect></div></div>
-           {!showUpscale && !showInpaint && (imageHasAspect || view === "video" && !showRepair && videoProfile.aspects.length > 0) && <div className="form-field"><label htmlFor="aspect-ratio">{t.aspectRatio}</label><div className="select-shell"><ThemedSelect id="aspect-ratio" value={selectedAspect} onValueChange={setAspect}>{(view === "image" ? imageAspectOptions : videoProfile.aspects).map(value => <option key={value} value={value}>{value === "auto" ? t.automatic : value}</option>)}</ThemedSelect></div></div>}
-           {!showUpscale && !showInpaint && (view === "video" && !showRepair && videoProfile.qualities.length > 0 || view === "image" && imageHasQuality) && <div className="form-field"><label htmlFor="media-quality">{t.quality}</label><div className="select-shell"><ThemedSelect id="media-quality" value={selectedQuality} onValueChange={setQuality}>{(view === "image" ? ["standard", "high"] : videoProfile.qualities).map(value => <option key={value} value={value}>{view === "video" ? effectiveModel === "kling-3.0/video" ? value === "standard" ? "Standard" : value === "high" ? "Pro" : "4K" : value === "low" ? effectiveModel === "fal-ai/luma-dream-machine/ray-2-flash" ? "540p" : "480p" : value === "standard" ? "720p" : value === "ultra" ? "4K" : "1080p" : value === "standard" ? t.standard : t.high}</option>)}</ThemedSelect></div></div>}
+          <div className="form-field"><label htmlFor="studio-model">{t.model}{catalogState === "ready" ? ` · ${selectModels.length}` : ""}</label><div className="select-shell"><ThemedSelect id="studio-model" value={effectiveModel} onValueChange={onModel} disabled={!selectModels.length}>{selectModels.length ? selectModels.map(option => <option key={option.id} value={option.id}>{option.name}{option.provider ? ` · ${option.provider === "kie" ? "Kie" : option.provider === "fal" ? "fal" : "WaveSpeed"}` : ""}</option>) : <option value="">{catalogState === "loading" ? locale === "fa" ? "در حال بارگذاری مدل‌ها…" : "Loading models…" : locale === "fa" ? "مدل‌ها در دسترس نیستند" : "Models unavailable"}</option>}</ThemedSelect></div>{catalogState === "error" && <button type="button" className="media-library-refresh" onClick={onCatalogRetry}>{t.retry}</button>}</div>
+           {!showUpscale && !showInpaint && (imageHasAspect || view === "video" && Boolean(effectiveModel) && !showRepair && videoProfile.aspects.length > 0) && <div className="form-field"><label htmlFor="aspect-ratio">{t.aspectRatio}</label><div className="select-shell"><ThemedSelect id="aspect-ratio" value={selectedAspect} onValueChange={setAspect}>{(view === "image" ? imageAspectOptions : videoProfile.aspects).map(value => <option key={value} value={value}>{value === "auto" ? t.automatic : value}</option>)}</ThemedSelect></div></div>}
+           {!showUpscale && !showInpaint && Boolean(effectiveModel) && (view === "video" && !showRepair && videoProfile.qualities.length > 0 || view === "image" && imageHasQuality) && <div className="form-field"><label htmlFor="media-quality">{t.quality}</label><div className="select-shell"><ThemedSelect id="media-quality" value={selectedQuality} onValueChange={setQuality}>{(view === "image" ? ["standard", "high"] : videoProfile.qualities).map(value => <option key={value} value={value}>{view === "video" ? effectiveModel === "kling-3.0/video" ? value === "standard" ? "Standard" : value === "high" ? "Pro" : "4K" : value === "low" ? effectiveModel === "fal-ai/luma-dream-machine/ray-2-flash" ? "540p" : "480p" : value === "standard" ? "720p" : value === "ultra" ? "4K" : "1080p" : value === "standard" ? t.standard : t.high}</option>)}</ThemedSelect></div></div>}
           {showUpscale && <>
             <div className="form-field"><label htmlFor="upscale-factor">{t.upscaleFactor}</label><div className="select-shell"><ThemedSelect id="upscale-factor" value={upscaleFactor} onValueChange={value => setUpscaleFactor(Number(value) as 2 | 4)}><option value={2}>2×</option><option value={4}>4×</option></ThemedSelect></div></div>
             <div className="form-field"><label htmlFor="upscale-preset">{t.upscalePreset}</label><div className="select-shell"><ThemedSelect id="upscale-preset" value={upscalePreset} onValueChange={value => setUpscalePreset(value as UpscalePreset)}>{upscalePresets.map(preset => <option value={preset} key={preset}>{preset}</option>)}</ThemedSelect></div></div>
             <div className="form-field"><label htmlFor="upscale-format">{t.upscaleFormat}</label><div className="select-shell"><ThemedSelect id="upscale-format" value={upscaleFormat} onValueChange={value => setUpscaleFormat(value as "jpeg" | "png")}><option value="jpeg">JPEG</option><option value="png">PNG</option></ThemedSelect></div></div>
           </>}
-           {view === "video" && !showRepair && videoProfile.durations.length > 0 && <div className="form-field"><label htmlFor="video-duration">{t.duration}</label><div className="select-shell"><ThemedSelect id="video-duration" value={selectedDuration} onValueChange={value => setDuration(value === "auto" ? "auto" : Number(value))}>{videoProfile.durations.map(value => <option key={value} value={value}>{value === "auto" ? t.automaticDuration : `${value} ${t.seconds}`}</option>)}</ThemedSelect></div></div>}
-           {view === "video" && !showRepair && videoProfile.audioToggle && <label className="toggle-field"><input type="checkbox" checked={generateAudio} onChange={event => setGenerateAudio(event.target.checked)} /><span>{t.videoAudio}</span></label>}
+           {view === "video" && Boolean(effectiveModel) && !showRepair && videoProfile.durations.length > 0 && <div className="form-field"><label htmlFor="video-duration">{t.duration}</label><div className="select-shell"><ThemedSelect id="video-duration" value={selectedDuration} onValueChange={value => setDuration(value === "auto" ? "auto" : Number(value))}>{videoProfile.durations.map(value => <option key={value} value={value}>{value === "auto" ? t.automaticDuration : `${value} ${t.seconds}`}</option>)}</ThemedSelect></div></div>}
+           {view === "video" && Boolean(effectiveModel) && !showRepair && videoProfile.audioToggle && <label className="toggle-field"><input type="checkbox" checked={generateAudio} onChange={event => setGenerateAudio(event.target.checked)} /><span>{t.videoAudio}</span></label>}
            {view === "video" && !showRepair && effectiveModel === "fal-ai/luma-dream-machine/ray-2-flash" && <label className="toggle-field"><input type="checkbox" checked={loopVideo} onChange={event => setLoopVideo(event.target.checked)} /><span>{locale === "fa" ? "ویدیوی تکرارشونده" : "Seamless loop"}</span></label>}
            {view === "video" && !showRepair && effectiveModel.startsWith("fal-ai/minimax/hailuo-2.3/standard/") && <label className="toggle-field"><input type="checkbox" checked={promptOptimizer} onChange={event => setPromptOptimizer(event.target.checked)} /><span>{locale === "fa" ? "بهینه‌سازی توصیف" : "Optimize prompt"}</span></label>}
           {view === "audio" && activeMode === 0 && <div className="form-field"><label htmlFor="audio-language">{t.language}</label><div className="select-shell"><ThemedSelect id="audio-language" value={language} onValueChange={setLanguage}><option value="auto">{t.automatic}</option><option value="en">{t.english}</option><option value="fa">{t.persian}</option></ThemedSelect></div></div>}
@@ -915,7 +913,7 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
           {view === "audio" && activeMode === 1 && (effectiveModel === "elevenlabs/music/v2" || effectiveModel === "elevenlabs/music/v2.5") && <label className="toggle-field"><input type="checkbox" checked={forceInstrumental} onChange={event => setForceInstrumental(event.target.checked)} /><span>{t.musicInstrumental}</span></label>}
           {showRepair && <div className="repair-controls"><div className="repair-title"><Scissors size={17} aria-hidden="true" /><strong>{t.repairRange}</strong></div><p>{preview ? t.repairHint : t.noClip}</p><div className="repair-fields"><div className="form-field"><label htmlFor="repair-start">{t.startTime}</label><div className="input-suffix"><input id="repair-start" type="number" min={0} max={Math.max(0, repairEnd - 1)} step={0.1} value={repairStart} onChange={event => setRepairStart(Math.max(0, Math.min(repairEnd - .1, Number(event.target.value) || 0)))} /><span>s</span></div></div><div className="form-field"><label htmlFor="repair-end">{t.endTime}</label><div className="input-suffix"><input id="repair-end" type="number" min={repairStart + .1} max={clipDuration} step={0.1} value={repairEnd} onChange={event => setRepairEnd(Math.min(clipDuration, Math.max(repairStart + .1, Number(event.target.value) || repairStart + .1)))} /><span>s</span></div></div></div></div>}
           <div className="inspector-spacer" />
-            <button className="primary-action" type="button" onClick={handleGenerate} disabled={busy || upscaleWorking || inpaintWorking || characterWorking || audioWorking}>{busy || upscaleWorking || inpaintWorking || characterWorking || audioWorking ? t.generationQueued : showUpscale ? t.upscaleAction : showRepair ? t.repairRange : t.generate}<ArrowRight size={17} aria-hidden="true" /></button>
+            <button className="primary-action" type="button" onClick={handleGenerate} disabled={!selectModels.length || busy || upscaleWorking || inpaintWorking || characterWorking || audioWorking}>{busy || upscaleWorking || inpaintWorking || characterWorking || audioWorking ? t.generationQueued : showUpscale ? t.upscaleAction : showRepair ? t.repairRange : t.generate}<ArrowRight size={17} aria-hidden="true" /></button>
             {view === "audio" && activeMode === 1 && <p className="inspector-note">{selectedModel?.priceNote ?? t.noPriceEstimate}</p>}
             {showInpaint && <p className="inspector-note">{t.inpaintCost}</p>}
             {showCharacter && <p className="inspector-note">{t.characterCost}</p>}
@@ -1023,6 +1021,8 @@ export default function WorkspaceApp() {
   const [imageChatModels, setImageChatModels] = useState<ChatModel[]>([{ id: "google/gemini-3.1-flash-image", name: "Gemini 3.1 Flash Image" }]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  const [hasMoreConversations, setHasMoreConversations] = useState(false);
   const [projects, setProjects] = useState<ChatProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [mediaProjectId, setMediaProjectId] = useState<string | null>(null);
@@ -1031,12 +1031,16 @@ export default function WorkspaceApp() {
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
   const [chatPending, setChatPending] = useState(false);
   const [chatError, setChatError] = useState("");
   const [chatNeedsDecision, setChatNeedsDecision] = useState(false);
   const [chatPreviousRequestId, setChatPreviousRequestId] = useState<string | null>(null);
   const [specialistId, setSpecialistId] = useState<SpecialistChatId | null>(null);
   const [mediaModels, setMediaModels] = useState<MediaModel[]>([]);
+  const [mediaCatalogState, setMediaCatalogState] = useState<"loading" | "ready" | "error">("loading");
+  const [mediaCatalogRevision, setMediaCatalogRevision] = useState(0);
   const [mediaJobs, setMediaJobs] = useState<Partial<Record<MediaView, MediaJob>>>({});
   const [mediaErrors, setMediaErrors] = useState<Partial<Record<MediaView, string>>>({});
   const [mediaSubmitting, setMediaSubmitting] = useState<Partial<Record<MediaView, boolean>>>({});
@@ -1057,6 +1061,7 @@ export default function WorkspaceApp() {
   const imageRequestRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
   const textRequestRef = useRef<PendingChatTurn | null>(null);
   const authEpochRef = useRef(0);
+  const historyRequestEpochRef = useRef(0);
   const conversationLoadEpochRef = useRef(0);
   const conversationLoadAbortRef = useRef<AbortController | null>(null);
 
@@ -1166,12 +1171,18 @@ export default function WorkspaceApp() {
   }, []);
   useEffect(() => {
     let active = true;
+    setMediaCatalogState("loading");
     fetch("/api/media/models", { credentials: "same-origin", cache: "no-store" })
-      .then(async response => response.ok ? response.json() : null)
+      .then(async response => {
+        if (!response.ok) throw new Error("model_catalog_unavailable");
+        return response.json();
+      })
       .then(body => {
-        if (!active || !body) return;
+        if (!active) return;
         const catalog = mediaModelsFromPayload(body);
+        if (!catalog.length) throw new Error("model_catalog_empty");
         setMediaModels(catalog);
+        setMediaCatalogState("ready");
         setModels(previous => {
           const next = { ...previous };
           const imageChoices = catalog.filter(item => item.outputKind === "image");
@@ -1183,9 +1194,9 @@ export default function WorkspaceApp() {
           return next;
         });
       })
-      .catch(() => { /* Bundled verified choices remain visible. */ });
+      .catch(() => { if (active) setMediaCatalogState("error"); });
     return () => { active = false; };
-  }, []);
+  }, [mediaCatalogRevision]);
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
   useEffect(() => () => { if (attachment) URL.revokeObjectURL(attachment.url); }, [attachment?.url]);
   useEffect(() => { if (authOpen) { previousFocusRef.current = document.activeElement as HTMLElement; closeRef.current?.focus(); document.body.style.overflow = "hidden"; } else { document.body.style.overflow = ""; } return () => { document.body.style.overflow = ""; }; }, [authOpen]);
@@ -1224,6 +1235,7 @@ export default function WorkspaceApp() {
         conversationLoadEpochRef.current++;
         setSelectedConversationId(null);
         setMessages([]);
+        setHasOlderMessages(false);
         setSpecialistId(null);
       }
       setChatMode("text");
@@ -1261,6 +1273,7 @@ export default function WorkspaceApp() {
     setSpecialistId(transition.specialistId);
     setSelectedConversationId(transition.conversationId);
     setMessages([]);
+    setHasOlderMessages(false);
     updateDraft("chat", prompt);
     navigate("chat");
     if (!user) openLogin(prompt, "chat");
@@ -1268,17 +1281,46 @@ export default function WorkspaceApp() {
   const t = copy[locale];
 
   const refreshConversations = useCallback(async () => {
+    const epoch = ++historyRequestEpochRef.current;
     setHistoryLoading(true);
+    setHistoryLoadingMore(false);
     try {
       const response = await fetch("/api/chat/conversations", { credentials: "same-origin", cache: "no-store" });
       if (!response.ok) throw new Error(await responseError(response));
-      setConversations(conversationsFromPayload(await response.json()));
+      const page = conversationsFromPayload(await response.json());
+      if (epoch !== historyRequestEpochRef.current) return;
+      setConversations(page);
+      setHasMoreConversations(page.length === 50);
     } catch {
-      setConversations([]);
+      if (epoch === historyRequestEpochRef.current) {
+        setConversations([]);
+        setHasMoreConversations(false);
+      }
     } finally {
-      setHistoryLoading(false);
+      if (epoch === historyRequestEpochRef.current) setHistoryLoading(false);
     }
   }, []);
+
+  const loadMoreConversations = async () => {
+    const cursor = conversations.at(-1)?.id;
+    if (!cursor || !hasMoreConversations || historyLoading || historyLoadingMore) return;
+    const epoch = historyRequestEpochRef.current;
+    setHistoryLoadingMore(true);
+    try {
+      const response = await fetch(`/api/chat/conversations?cursor=${encodeURIComponent(cursor)}`, {
+        credentials: "same-origin", cache: "no-store"
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      const page = conversationsFromPayload(await response.json());
+      if (epoch !== historyRequestEpochRef.current) return;
+      setConversations(previous => {
+        const seen = new Set(previous.map(item => item.id));
+        return [...previous, ...page.filter(item => !seen.has(item.id))];
+      });
+      setHasMoreConversations(page.length === 50);
+    } catch { /* The older page can be retried without discarding loaded conversations. */ }
+    finally { if (epoch === historyRequestEpochRef.current) setHistoryLoadingMore(false); }
+  };
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -1294,7 +1336,11 @@ export default function WorkspaceApp() {
 
   useEffect(() => {
     if (user) void refreshConversations();
-    else { setConversations([]); setSelectedConversationId(null); setMessages([]); }
+    else {
+      historyRequestEpochRef.current++;
+      setConversations([]); setHasMoreConversations(false); setHistoryLoading(false); setHistoryLoadingMore(false);
+      setSelectedConversationId(null); setMessages([]); setHasOlderMessages(false);
+    }
   }, [user, refreshConversations]);
   useEffect(() => {
     if (user) void refreshProjects();
@@ -1398,7 +1444,10 @@ export default function WorkspaceApp() {
     const epoch = ++conversationLoadEpochRef.current;
     setSpecialistId(null);
     setSelectedConversationId(id);
+    setMessages([]);
     setMessagesLoading(true);
+    setOlderMessagesLoading(false);
+    setHasOlderMessages(false);
     setChatError("");
     try {
       const response = await fetch(`/api/chat/conversations/${encodeURIComponent(id)}`, { credentials: "same-origin", cache: "no-store", signal: controller.signal });
@@ -1406,7 +1455,9 @@ export default function WorkspaceApp() {
       const body = await response.json();
       if (epoch !== conversationLoadEpochRef.current || controller.signal.aborted) return;
       setSelectedProjectId(typeof body?.conversation?.projectId === "string" ? body.conversation.projectId : null);
-      setMessages(messagesFromPayload(body));
+      const page = messagesFromPayload(body);
+      setMessages(page);
+      setHasOlderMessages(page.length === 100);
     } catch (error) {
       if (epoch === conversationLoadEpochRef.current && !controller.signal.aborted) {
         setChatError(error instanceof Error ? error.message : t.sendError);
@@ -1419,6 +1470,28 @@ export default function WorkspaceApp() {
     }
   };
 
+  const loadOlderMessages = async () => {
+    const before = messages[0]?.id;
+    const id = selectedConversationId;
+    if (!before || !id || !hasOlderMessages || messagesLoading || olderMessagesLoading || pendingRef.current) return;
+    const epoch = conversationLoadEpochRef.current;
+    setOlderMessagesLoading(true);
+    try {
+      const response = await fetch(`/api/chat/conversations/${encodeURIComponent(id)}?before=${encodeURIComponent(before)}`, {
+        credentials: "same-origin", cache: "no-store"
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      const page = messagesFromPayload(await response.json());
+      if (epoch !== conversationLoadEpochRef.current) return;
+      setMessages(previous => {
+        const seen = new Set(previous.map(item => item.id));
+        return [...page.filter(item => !seen.has(item.id)), ...previous];
+      });
+      setHasOlderMessages(page.length === 100);
+    } catch { /* The older page can be retried without losing the current messages. */ }
+    finally { if (epoch === conversationLoadEpochRef.current) setOlderMessagesLoading(false); }
+  };
+
   const newConversation = () => {
     if (pendingRef.current) return;
     conversationLoadEpochRef.current++;
@@ -1429,6 +1502,7 @@ export default function WorkspaceApp() {
     setSpecialistId(null);
     setSelectedConversationId(null);
     setMessages([]);
+    setHasOlderMessages(false);
     setChatError("");
     promptRef.current?.focus();
   };
@@ -1442,6 +1516,7 @@ export default function WorkspaceApp() {
     setSelectedProjectId(projectId);
     setSelectedConversationId(null);
     setMessages([]);
+    setHasOlderMessages(false);
     setChatError("");
   };
 
@@ -1685,7 +1760,9 @@ export default function WorkspaceApp() {
         context.run(() => {
           setSelectedConversationId(conversationId);
           setSelectedProjectId(typeof body?.conversation?.projectId === "string" ? body.conversation.projectId : null);
-          setMessages(messagesFromPayload(body));
+          const page = messagesFromPayload(body);
+          setMessages(page);
+          setHasOlderMessages(page.length === 100);
           if (clearDraft) setAttachment(null);
           setSpecialistId(null);
         });
@@ -1824,6 +1901,7 @@ export default function WorkspaceApp() {
   };
 
   const clearPrivateWorkspace = () => {
+    historyRequestEpochRef.current++;
     conversationLoadEpochRef.current++;
     conversationLoadAbortRef.current?.abort();
     conversationLoadAbortRef.current = null;
@@ -1857,6 +1935,8 @@ export default function WorkspaceApp() {
     repairSubmissionRef.current = null;
     genericSubmissionRef.current = {};
     setConversations([]);
+    setHasMoreConversations(false);
+    setHistoryLoadingMore(false);
     setProjects([]);
     setSelectedProjectId(null);
     setProjectBusy(false);
@@ -1866,6 +1946,8 @@ export default function WorkspaceApp() {
     setHistoryLoading(false);
     setSelectedConversationId(null);
     setMessages([]);
+    setHasOlderMessages(false);
+    setOlderMessagesLoading(false);
     setMessagesLoading(false);
     setChatPending(false);
     setChatError("");
@@ -2284,9 +2366,9 @@ export default function WorkspaceApp() {
       <Header locale={locale} theme={theme} view={view} user={user} onLocale={setLocale} onTheme={() => setTheme(current => current === "light" ? "dark" : "light")} onNavigate={navigate} onLogin={() => openLogin()} onSignOut={() => void signOut()} />
       <main id="main-content">
         {view === "chat" && (user
-          ? <ChatWorkspace locale={locale} user={user} conversations={conversations} historyLoading={historyLoading} selectedId={selectedConversationId} projects={projects} selectedProjectId={selectedProjectId} projectBusy={projectBusy} projectError={projectError} onSelectProject={selectProject} onCreateProject={createChatProject} onUpdateProject={updateChatProject} onDeleteProject={deleteChatProject} onMoveConversation={moveConversation} messages={messages} messageLoading={messagesLoading} pending={chatPending} error={chatError} showSeparateRequest={chatNeedsDecision} previousRequestId={chatPreviousRequestId} onSeparateRequest={startSeparateTextRequest} prompt={drafts.chat} onPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} onModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSend={() => void sendChat()} onSelect={id => void selectConversation(id)} onNew={newConversation} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />
+          ? <ChatWorkspace locale={locale} user={user} conversations={conversations} historyLoading={historyLoading} historyLoadingMore={historyLoadingMore} hasMoreConversations={hasMoreConversations} onLoadMoreConversations={() => void loadMoreConversations()} selectedId={selectedConversationId} projects={projects} selectedProjectId={selectedProjectId} projectBusy={projectBusy} projectError={projectError} onSelectProject={selectProject} onCreateProject={createChatProject} onUpdateProject={updateChatProject} onDeleteProject={deleteChatProject} onMoveConversation={moveConversation} messages={messages} messageLoading={messagesLoading} olderMessagesLoading={olderMessagesLoading} hasOlderMessages={hasOlderMessages} onLoadOlderMessages={() => void loadOlderMessages()} pending={chatPending} error={chatError} showSeparateRequest={chatNeedsDecision} previousRequestId={chatPreviousRequestId} onSeparateRequest={startSeparateTextRequest} prompt={drafts.chat} onPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} onModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSend={() => void sendChat()} onSelect={id => void selectConversation(id)} onNew={newConversation} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />
           : <ChatLanding locale={locale} prompt={drafts.chat} setPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} setModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSubmit={() => void sendChat()} onNavigate={navigate} onStarter={useWorkflow} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />)}
-        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} onUseReference={setPreview} onLastFrameChange={() => { lastFrameUploadRef.current = null; firstLastSubmissionRef.current = null; }} availableModels={mediaModels.filter(item => item.outputKind === view)} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} onLogin={() => openLogin("", view)} projects={projects} projectId={mediaProjectId} onProjectChange={setMediaProjectId} />}
+        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} onUseReference={setPreview} onLastFrameChange={() => { lastFrameUploadRef.current = null; firstLastSubmissionRef.current = null; }} availableModels={mediaModels.filter(item => item.outputKind === view)} catalogState={mediaCatalogState} onCatalogRetry={() => setMediaCatalogRevision(value => value + 1)} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} onLogin={() => openLogin("", view)} projects={projects} projectId={mediaProjectId} onProjectChange={setMediaProjectId} />}
         {view === "explore" && <ConnectedExplorePage locale={locale} user={user} onUse={useWorkflow} onLogin={() => openLogin()} />}
         {view === "specialists" && <ConnectedSpecialistsPage locale={locale} onAsk={askSpecialist} />}
       </main>

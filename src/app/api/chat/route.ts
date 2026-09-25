@@ -40,7 +40,8 @@ function event(name: string, payload: unknown): Uint8Array {
   return new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(payload)}\n\n`);
 }
 
-async function messageContent(ownerId: string, blocks: ContentBlock[], budget: { remaining: number }): Promise<ChatMessage["content"]> {
+async function messageContent(ownerId: string, blocks: ContentBlock[], budget: { remaining: number },
+  omitUnavailableAttachments = false): Promise<ChatMessage["content"]> {
   const parts: ChatPart[] = [];
   for (const block of blocks) {
     if (block.type === "text") {
@@ -51,12 +52,23 @@ async function messageContent(ownerId: string, blocks: ContentBlock[], budget: {
         ["image/png", "image/jpeg", "image/webp"].includes(asset.mimeType);
       const validPdf = block.type === "file" && asset?.kind === "file" && asset.mimeType === "application/pdf";
       if (!asset || (!validImage && !validPdf)) {
+        if (omitUnavailableAttachments) continue;
         throw new Error("Invalid chat attachment.");
       }
       if (asset.sizeBytes > 10_000_000 || asset.sizeBytes > budget.remaining) {
+        if (omitUnavailableAttachments) continue;
         throw new Error("Chat attachments exceed the 20 MB context limit.");
       }
-      const bytes = await readFile(mediaPath(asset.storageKey));
+      let bytes: Buffer;
+      try { bytes = await readFile(mediaPath(asset.storageKey)); }
+      catch (error) {
+        if (omitUnavailableAttachments) continue;
+        throw error;
+      }
+      if (bytes.length > 10_000_000 || bytes.length > budget.remaining) {
+        if (omitUnavailableAttachments) continue;
+        throw new Error("Chat attachments exceed the 20 MB context limit.");
+      }
       budget.remaining -= bytes.length;
       if (validPdf) {
         parts.push({ type: "file", file: {
@@ -165,13 +177,17 @@ export async function POST(request: Request) {
   const messages: ChatMessage[] = projectContextMessages(currentUser.id, projectId, existing?.id);
   const budget = { remaining: 20_000_000 };
   try {
-    for (const item of history) {
+    // Reserve context for the current turn, then retain the newest historical
+    // attachments that fit. Older files must not block a text-only follow-up.
+    const currentContent = await messageContent(currentUser.id, userBlocks, budget);
+    const historicalMessages: ChatMessage[] = [];
+    for (const item of [...history].reverse()) {
       // Previous specialist prompts are audit records, not durable instructions.
       if (item.role !== "user" && item.role !== "assistant") continue;
-      const content = await messageContent(currentUser.id, item.blocks, budget);
-      if (content) messages.push({ role: item.role, content });
+      const content = await messageContent(currentUser.id, item.blocks, budget, true);
+      if (content) historicalMessages.push({ role: item.role, content });
     }
-    messages.push({ role: "user", content: await messageContent(currentUser.id, userBlocks, budget) });
+    messages.push(...historicalMessages.reverse(), { role: "user", content: currentContent });
   } catch {
     return Response.json({ error: "Could not read the attachments or their combined context is too large." }, { status: 422 });
   }

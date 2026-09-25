@@ -9,5 +9,6 @@ export function usableReference(reference: Reference, allowedTypes: readonly str
 }
 
 export function retainImageReferenceOnModeChange(view: string, nextMode: number, reference: Reference): boolean {
-  return view === "image" && nextMode > 0 && Boolean(reference?.mime.startsWith("image/"));
+  return (view === "image" && nextMode > 0 || view === "video" && (nextMode === 1 || nextMode === 3)) &&
+    Boolean(reference?.mime.startsWith("image/"));
 }

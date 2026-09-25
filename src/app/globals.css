@@ -246,6 +246,8 @@ html[dir="rtl"] .sample-user span { border-radius: 13px 13px 13px 3px; }
 .history-list button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-list button:hover { background: var(--surface-soft); color: var(--ink); }
 .history-list button[aria-current="page"] { border-color: var(--line); background: var(--accent-soft); color: var(--ink); }
+.history-list .history-more-button { justify-content: center; border-color: var(--line); color: var(--accent); font-weight: 650; }
+.history-list .history-more-button:disabled { opacity: .65; cursor: wait; }
 .history-empty { padding: 0 10px; color: var(--muted); font-size: 13px; line-height: 1.55; }
 .history-user { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 17px 6px 2px; border-top: 1px solid var(--line); }
 .user-avatar { display: grid; place-items: center; width: 37px; height: 37px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); font-size: 14px; font-weight: 730; }
@@ -265,6 +267,9 @@ html[dir="rtl"] .sample-user span { border-radius: 13px 13px 13px 3px; }
 .chat-project-note span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-model-badge { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 13px; }
 .messages-area { flex: 1; min-height: 340px; max-height: calc(100vh - 330px); overflow-y: auto; }
+.messages-more-button { display: block; margin: 12px auto 26px; padding: 9px 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--accent); font-size: 13px; font-weight: 650; cursor: pointer; }
+.messages-more-button:hover { border-color: var(--accent); }
+.messages-more-button:disabled { opacity: .65; cursor: wait; }
 .chat-empty { display: grid; justify-items: center; align-content: center; min-height: 350px; padding: 50px 20px; text-align: center; }
 .chat-empty > .brand-icon { width: 47px; height: 47px; color: var(--accent); }
 .chat-empty > .brand-icon svg { width: 25px; height: 25px; }

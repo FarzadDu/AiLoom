@@ -14,7 +14,8 @@ export async function GET(request: Request, context: Context) {
   const { id } = await context.params;
   const conversation = getConversation(current.id, id);
   if (!conversation) return Response.json({ error: "Conversation not found." }, { status: 404 });
-  const messages = listMessages(current.id, id, { limit: 100 }) ?? [];
+  const before = new URL(request.url).searchParams.get("before") || undefined;
+  const messages = listMessages(current.id, id, { limit: 100, before }) ?? [];
   return Response.json({ conversation, messages }, { headers: { "Cache-Control": "no-store" } });
 }
 
