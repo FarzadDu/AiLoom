@@ -88,7 +88,8 @@ export class TemporalRepairError extends Error {
       | "process_failed"
       | "invalid_repair"
       | "invalid_output",
-    message: string
+    message: string,
+    public readonly diagnostic: { reason: string; expected?: number; actual?: number } | null = null
   ) {
     super(message);
     this.name = "TemporalRepairError";
@@ -315,13 +316,15 @@ async function probeVideo(
 async function probeProviderVideo(setup: ReturnType<typeof commandSetup>, filePath: string) {
   const { streams, format } = await probeMetadata(setup, filePath);
   const video = streams.find(stream => stream.codec_type === "video");
-  if (!video) throw new TemporalRepairError("invalid_repair", "The provider returned no video stream.");
+  if (!video) throw new TemporalRepairError("invalid_repair", "The provider returned no video stream.",
+    { reason: "provider_no_video_stream" });
   const width = positiveInteger(video.width);
   const height = positiveInteger(video.height);
   const durationSec = positiveNumber(video.duration) ?? positiveNumber(format.duration);
   if (!width || !height || !durationSec || width * height > MAX_SOURCE_PIXELS ||
       durationSec > 30) {
-    throw new TemporalRepairError("invalid_repair", "The provider video has invalid dimensions or duration.");
+    throw new TemporalRepairError("invalid_repair", "The provider video has invalid dimensions or duration.",
+      { reason: "provider_invalid_metadata", actual: durationSec ?? undefined });
   }
   return { width, height, durationSec };
 }
@@ -475,7 +478,8 @@ function validatePlan(plan: TemporalRepairPlan): void {
       plan.targetStartFrameInContext !== plan.startFrame - plan.contextStartFrame ||
       plan.targetEndFrameInContext !== plan.endFrame - plan.contextStartFrame ||
       !planRate || Math.abs(planRate.number - plan.fps) > 0.001) {
-    throw new TemporalRepairError("invalid_repair", "The repair plan is invalid.");
+    throw new TemporalRepairError("invalid_repair", "The repair plan is invalid.",
+      { reason: "plan_invalid" });
   }
 }
 
@@ -498,14 +502,30 @@ export async function spliceTemporalRepair(
   ]);
   const plan = input.plan;
   const contextDurationSec = plan.frameCount / plan.fps;
-  if (source.frameCount !== plan.totalFrames ||
-      source.width !== plan.width || source.height !== plan.height ||
-      !sameFrameRate(source, { ...source, fps: plan.fps }) ||
-      repaired.durationSec < contextDurationSec * 0.5 ||
-      repaired.durationSec > contextDurationSec * 1.75 ||
-      Math.abs(repaired.width / repaired.height - plan.width / plan.height) > 0.1) {
+  const sourceAspect = plan.width / plan.height;
+  const providerAspect = repaired.width / repaired.height;
+  // LTX aligns output dimensions to model-friendly multiples of 64. The
+  // scale+center-crop filter below can safely remove a small border; measure
+  // the actual fraction cropped instead of an absolute aspect-ratio delta.
+  const cropFraction = 1 - Math.min(sourceAspect, providerAspect) /
+    Math.max(sourceAspect, providerAspect);
+  const mismatch = source.frameCount !== plan.totalFrames
+    ? { reason: "source_frame_count", actual: source.frameCount, expected: plan.totalFrames }
+    : source.width !== plan.width || source.height !== plan.height
+      ? { reason: "source_dimensions", actual: source.width / source.height,
+        expected: plan.width / plan.height }
+      : !sameFrameRate(source, { ...source, fps: plan.fps })
+        ? { reason: "source_frame_rate", actual: source.fps, expected: plan.fps }
+        : repaired.durationSec < contextDurationSec * 0.5 ||
+          repaired.durationSec > contextDurationSec * 1.75
+          ? { reason: "provider_duration", actual: repaired.durationSec, expected: contextDurationSec }
+          : cropFraction > 0.1
+            ? { reason: "provider_aspect_crop_fraction", actual: cropFraction,
+              expected: 0.1 }
+            : null;
+  if (mismatch) {
     throw new TemporalRepairError("invalid_repair",
-      "The repaired clip does not match the source timeline.");
+      "The repaired clip does not match the source timeline.", mismatch);
   }
   await mkdir(path.dirname(outputPath), { recursive: true });
   const timebase = filterTimebase(plan.fpsRatio);

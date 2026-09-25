@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
-import { prepareTemporalRepair, spliceTemporalRepair } from "../src/server/media/temporal-repair";
+import { prepareTemporalRepair, spliceTemporalRepair, TemporalRepairError } from "../src/server/media/temporal-repair";
 import { videoToolPaths } from "../src/server/media/binaries";
 
 type CommandCall = { executable: string; args: readonly string[] };
@@ -13,15 +13,15 @@ type ProbeKind = "source" | "context" | "mask" | "repaired" | "output";
 function probeVideo(
   durationSec: number,
   frameCount: number,
-  options: { fps?: string; averageFps?: string; audio?: boolean } = {}
+  options: { fps?: string; averageFps?: string; audio?: boolean; width?: number; height?: number } = {}
 ): string {
   const fps = options.fps ?? "30/1";
   const streams: Record<string, unknown>[] = [{
     index: 0,
     codec_type: "video",
     codec_name: "h264",
-    width: 1280,
-    height: 720,
+    width: options.width ?? 1280,
+    height: options.height ?? 720,
     pix_fmt: "yuv420p",
     r_frame_rate: fps,
     avg_frame_rate: options.averageFps ?? fps,
@@ -44,10 +44,14 @@ function fixture(options: {
   sourceFps?: string;
   sourceAverageFps?: string;
   sourceAudio?: boolean;
+  contextFrames?: number;
+  contextDuration?: number;
   repairedFrames?: number;
   repairedDuration?: number;
   repairedFps?: string;
   repairedAverageFps?: string;
+  repairedWidth?: number;
+  repairedHeight?: number;
   failTool?: "ffmpeg" | "ffprobe";
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "ailoom-temporal-test-"));
@@ -66,14 +70,16 @@ function fixture(options: {
     averageFps: options.sourceAverageFps,
     audio: options.sourceAudio
   });
-  const contextProbe = probeVideo(3, 90, { audio: false });
+  const contextProbe = probeVideo(options.contextDuration ?? 3, options.contextFrames ?? 90,
+    { audio: false, fps: options.sourceFps });
   const repairedProbe = probeVideo(
     options.repairedDuration ?? 3,
     options.repairedFrames ?? 90,
-    { audio: false, fps: options.repairedFps, averageFps: options.repairedAverageFps }
+    { audio: false, fps: options.repairedFps, averageFps: options.repairedAverageFps,
+      width: options.repairedWidth, height: options.repairedHeight }
   );
   const outputProbe = probeVideo(sourceDuration, sourceFrames, {
-    audio: options.sourceAudio
+    audio: options.sourceAudio, fps: options.sourceFps
   });
   const runCommand = async (executable: string, args: readonly string[]) => {
     calls.push({ executable, args: [...args] });
@@ -268,6 +274,51 @@ test("splicing retimes a provider clip with rounded frames and a different frame
   }
 });
 
+test("accepts LTX's 1280x768 alignment for a 1280x720 repair with only 6.25% center crop", async () => {
+  const f = fixture({ sourceDuration: 4, sourceFrames: 96, sourceFps: "24/1",
+    contextDuration: 3.5, contextFrames: 84,
+    repairedDuration: 3.5, repairedFrames: 84, repairedFps: "24/1",
+    repairedWidth: 1280, repairedHeight: 768 });
+  try {
+    const plan = await prepareTemporalRepair({
+      sourcePath: f.sourcePath, workDir: f.workDir,
+      startSec: 0.75, endSec: 2.75, contextSec: 0.75,
+      prompt: "Repair only the selected part"
+    }, f.commandOptions);
+    assert.equal(plan.frameCount, 84);
+    assert.equal(plan.targetStartFrameInContext, 18);
+    assert.equal(plan.targetEndFrameInContext, 66);
+    await spliceTemporalRepair({ plan, repairedContextPath: f.repairedContextPath,
+      outputPath: f.outputPath }, f.commandOptions);
+    const render = f.calls.find(call => call.executable.includes("ffmpeg") &&
+      call.args.at(-1) === f.outputPath);
+    assert.ok(render);
+    const filter = render.args[render.args.indexOf("-filter_complex") + 1];
+    assert.match(filter, /scale=1280:720:force_original_aspect_ratio=increase/);
+    assert.match(filter, /crop=1280:720,trim=start_frame=18:end_frame=66/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("rejects provider dimensions that would crop over 10% of the generated frame", async () => {
+  const f = fixture({ repairedWidth: 1280, repairedHeight: 960 });
+  try {
+    const plan = await prepareTemporalRepair({
+      sourcePath: f.sourcePath, workDir: f.workDir,
+      startSec: 3, endSec: 4, contextSec: 1, prompt: "Repair"
+    }, f.commandOptions);
+    await assert.rejects(spliceTemporalRepair({
+      plan, repairedContextPath: f.repairedContextPath, outputPath: f.outputPath
+    }, f.commandOptions), error => error instanceof TemporalRepairError &&
+      error.code === "invalid_repair" &&
+      error.diagnostic?.reason === "provider_aspect_crop_fraction" &&
+      Math.abs((error.diagnostic.actual ?? 0) - 0.25) < 0.000001);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("splicing rejects a provider clip far outside the requested context duration", async () => {
   const f = fixture({ repairedFrames: 180, repairedDuration: 6 });
   try {
@@ -277,7 +328,9 @@ test("splicing rejects a provider clip far outside the requested context duratio
     }, f.commandOptions);
     await assert.rejects(spliceTemporalRepair({
       plan, repairedContextPath: f.repairedContextPath, outputPath: f.outputPath
-    }, f.commandOptions), { code: "invalid_repair" });
+    }, f.commandOptions), error => error instanceof TemporalRepairError &&
+      error.code === "invalid_repair" && error.diagnostic?.reason === "provider_duration" &&
+      error.diagnostic.actual === 6 && error.diagnostic.expected === 3);
     assert.equal(f.calls.some(call => call.executable.includes("ffmpeg") &&
       call.args.at(-1) === f.outputPath), false);
   } finally {
@@ -304,7 +357,7 @@ test("real FFmpeg splice preserves source frames and audio after provider retimi
       "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
       "-t", "4", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", sourcePath]);
     await run(paths.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y",
-      "-f", "lavfi", "-i", "testsrc2=size=426x240:rate=25",
+      "-f", "lavfi", "-i", "testsrc2=size=320x192:rate=25",
       "-t", "3", "-c:v", "libx264", "-preset", "ultrafast", repairedContextPath]);
     const plan = await prepareTemporalRepair({
       sourcePath, workDir: join(directory, "work"), startSec: 1,

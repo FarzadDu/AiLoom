@@ -250,7 +250,8 @@ async function pollWithLease(job: ActiveJob, leaseOwner: string,
       // media error are enough to diagnose frame/timeline regressions.
       console.error("Ailoom repair completion failed", {
         jobId: job.id,
-        code: error instanceof TemporalRepairError ? error.code : "unexpected"
+        code: error instanceof TemporalRepairError ? error.code : "unexpected",
+        diagnostic: error instanceof TemporalRepairError ? error.diagnostic : null
       });
       const failed = transitionGenerationJob(job.ownerId, job.id, {
         state: "failed", errorCode: error instanceof TemporalRepairError && error.code === "invalid_repair"
