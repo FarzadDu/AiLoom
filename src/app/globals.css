@@ -134,6 +134,7 @@ html[data-theme="dark"] .chat-voice-mode[aria-pressed="true"] { border-color: #f
 .model-popover { position: absolute; z-index: 25; bottom: calc(100% + 9px); inset-inline-start: 0; width: min(380px, calc(100vw - 44px)); max-height: min(420px, 55vh); padding: 10px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); box-shadow: 0 15px 45px rgba(0,0,0,.17); }
 .model-popover input { display: block; width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 9px; outline: none; background: var(--surface-soft); color: var(--ink); font-size: 14px; }
 .model-popover input:focus { border-color: var(--accent); }
+.model-catalog-count { margin: 9px 6px 3px; color: var(--muted); font-size: 12px; }
 .model-results { max-height: min(350px, 44vh); margin-top: 7px; overflow-y: auto; }
 .model-results > p { padding: 15px 10px; color: var(--muted); font-size: 13px; }
 .model-result { position: relative; display: grid; gap: 1px; width: 100%; min-height: 52px; padding: 7px 34px 7px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); text-align: start; }
@@ -277,6 +278,8 @@ html[dir="rtl"] .sample-user span { border-radius: 13px 13px 13px 3px; }
 .message-body > div { white-space: pre-wrap; overflow-wrap: anywhere; text-align: start; }
 .message-body > div a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .chat-message-user .message-body > div { display: inline-block; padding: 12px 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.message-delivery-note { display: block; margin-top: 8px; color: #a3443c; font-size: 12px; line-height: 1.5; }
+html[data-theme="dark"] .message-delivery-note { color: #fac8c1; }
 .message-media { display: block; width: min(100%, 580px); margin-top: 11px; overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); }
 .message-media img, .message-media video { display: block; width: 100%; max-height: 430px; object-fit: contain; }
 .message-media audio { display: block; width: 100%; padding: 10px; }

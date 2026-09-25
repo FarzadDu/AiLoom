@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type RefObject } from "react";
 import { conversationsFromPayload, messagesFromPayload, modelsFromPayload, projectsFromPayload, readChatStream, responseError, sessionUserFromPayload, type ChatMessage, type ChatModel, type ChatProject, type ConversationSummary, type SessionUser } from "./chat-api";
+import { prepareChatModelCatalog } from "./chat-model-catalog";
 import { ChatProjects, projectLabel } from "./chat-projects";
 import { ExplorePage as ConnectedExplorePage, SpecialistsPage as ConnectedSpecialistsPage } from "./content-pages";
 import { libraryPageFromPayload, mediaAssetsFromJob, mediaDownloadName, mediaJobFromPayload, mediaModelsFromPayload, mediaViewForJob, type LibraryAsset, type MediaAsset, type MediaJob, type MediaModel } from "./media-api";
@@ -119,13 +120,16 @@ function ModelPicker({ view, locale, value, onChange, options }: { view: View; l
   const entries = options ?? modelOptions[view];
   const normalized = entries.map(option => ({ id: option.id, name: "label" in option ? option.label : option.name }));
   const selected = normalized.find(option => option.id === value) ?? { id: value, name: value };
+  const label = (option: { id: string; name: string }) => option.id === "openrouter/auto"
+    ? locale === "fa" ? "خودکار · OpenRouter" : "Auto · OpenRouter"
+    : option.name;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const pickerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const listId = useId();
   const filtered = query.trim()
-    ? normalized.filter(option => `${option.name} ${option.id}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).slice(0, 60)
+    ? normalized.filter(option => `${option.name} ${option.id}${view === "chat" && option.id.startsWith("openai/") ? " ChatGPT" : ""}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).slice(0, 60)
     : [selected, ...normalized.filter(option => option.id !== selected.id)].slice(0, 12);
   useEffect(() => {
     if (!open) return;
@@ -143,10 +147,11 @@ function ModelPicker({ view, locale, value, onChange, options }: { view: View; l
   useEffect(() => { setOpen(false); setQuery(""); }, [options]);
   return (
     <div className="model-picker" ref={pickerRef}>
-      <button type="button" className="model-picker-trigger" aria-label={`${t.model}: ${selected.name}`} aria-expanded={open} aria-controls={open ? listId : undefined} onClick={() => setOpen(previous => !previous)}><Sparkles size={17} aria-hidden="true" /><span>{selected.id === "openrouter/auto" ? t.smartChoice : selected.name}</span><ChevronDown size={14} aria-hidden="true" /></button>
+      <button type="button" className="model-picker-trigger" aria-label={`${t.model}: ${label(selected)}`} aria-expanded={open} aria-controls={open ? listId : undefined} onClick={() => setOpen(previous => !previous)}><Sparkles size={17} aria-hidden="true" /><span>{label(selected)}</span><ChevronDown size={14} aria-hidden="true" /></button>
       {open && <div className="model-popover" id={listId} role="group" aria-label={t.model}>
         <input ref={searchRef} type="search" aria-label={t.searchModels} placeholder={t.searchModels} value={query} onChange={event => setQuery(event.target.value)} />
-        <div className="model-results">{filtered.length ? filtered.map(option => <button type="button" key={option.id} className="model-result" aria-current={option.id === value ? "true" : undefined} onClick={() => { onChange(option.id); setOpen(false); setQuery(""); }}><span>{option.id === "openrouter/auto" ? t.smartChoice : option.name}</span><small dir="ltr">{option.id}</small>{option.id === value && <Check size={16} aria-hidden="true" />}</button>) : <p>{t.noModelsFound}</p>}</div>
+        {options && <p className="model-catalog-count">{locale === "fa" ? `جست‌وجو در ${normalized.length} مدل` : `Search ${normalized.length} models`}</p>}
+        <div className="model-results">{filtered.length ? filtered.map(option => <button type="button" key={option.id} className="model-result" aria-current={option.id === value ? "true" : undefined} onClick={() => { onChange(option.id); setOpen(false); setQuery(""); }}><span>{label(option)}</span><small dir="ltr">{option.id}</small>{option.id === value && <Check size={16} aria-hidden="true" />}</button>) : <p>{t.noModelsFound}</p>}</div>
       </div>}
     </div>
   );
@@ -191,7 +196,11 @@ function ChatComposer({ locale, prompt, onPrompt, model, onModel, modelList, mod
   const fileRef = useRef<HTMLInputElement>(null);
   const promptValueRef = useRef(prompt);
   promptValueRef.current = prompt;
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); onSubmit(); };
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    onSubmit();
+    if (compact) inputRef.current?.focus();
+  };
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
@@ -203,13 +212,13 @@ function ChatComposer({ locale, prompt, onPrompt, model, onModel, modelList, mod
       {!compact && <div className="panel-heading"><strong>{t.newConversation}</strong><span className="panel-caption">{t.ideaBegins}</span></div>}
       <div className="prompt-area">
         <label className="sr-only" htmlFor="chat-prompt">{t.newConversation}</label>
-        <textarea id="chat-prompt" ref={inputRef} value={prompt} onChange={event => onPrompt(event.target.value)} onKeyDown={handleKeyDown} dir={directionForText(prompt, locale)} placeholder={mode === "image" ? t.chatImagePlaceholder : t.chatPlaceholder} rows={compact ? 2 : 4} disabled={disabled} />
-        {attachment && <div className="attachment-pill"><Paperclip size={15} aria-hidden="true" /><span title={attachment.name}>{attachment.name}</span><button type="button" aria-label={t.removeFile} onClick={onRemoveAttachment}><X size={15} /></button></div>}
+        <textarea id="chat-prompt" ref={inputRef} value={prompt} onChange={event => onPrompt(event.target.value)} onKeyDown={handleKeyDown} dir={directionForText(prompt, locale)} placeholder={mode === "image" ? t.chatImagePlaceholder : t.chatPlaceholder} rows={compact ? 2 : 4} />
+        {attachment && <div className="attachment-pill"><Paperclip size={15} aria-hidden="true" /><span title={attachment.name}>{attachment.name}</span><button type="button" aria-label={t.removeFile} onClick={onRemoveAttachment} disabled={disabled}><X size={15} /></button></div>}
       </div>
       <div className="composer-toolbar">
         <div className="toolbar-left">
-          <input ref={fileRef} className="sr-only" type="file" accept={mode === "text" ? "image/png,image/jpeg,image/webp,application/pdf" : "image/png,image/jpeg,image/webp"} onChange={event => { onAttach(event); event.currentTarget.value = ""; }} aria-label={t.attach} />
-          <button type="button" className="attach-button" onClick={() => fileRef.current?.click()} aria-label={t.attach}><Plus size={20} /></button>
+          <input ref={fileRef} className="sr-only" type="file" accept={mode === "text" ? "image/png,image/jpeg,image/webp,application/pdf" : "image/png,image/jpeg,image/webp"} onChange={event => { onAttach(event); event.currentTarget.value = ""; }} aria-label={t.attach} disabled={disabled} />
+          <button type="button" className="attach-button" onClick={() => fileRef.current?.click()} aria-label={t.attach} disabled={disabled}><Plus size={20} /></button>
           <button type="button" className="chat-image-mode" aria-label={mode === "image" ? t.chatTextModeHint : t.chatImageModeHint} aria-pressed={mode === "image"} title={mode === "image" ? t.chatTextModeHint : t.chatImageModeHint} disabled={disabled} onClick={() => onMode(mode === "image" ? "text" : "image")}><ImageIcon size={18} aria-hidden="true" /><span>{t.chatImageMode}</span></button>
           {mode === "text" && <button type="button" className="chat-web-mode" aria-label={attachment ? t.webSearchNoImage : t.webSearchHint} aria-pressed={webSearch} title={attachment ? t.webSearchNoImage : t.webSearchHint} disabled={disabled || Boolean(attachment)} onClick={() => onWebSearch(!webSearch)}><Compass size={18} aria-hidden="true" /><span>{t.webSearch}</span></button>}
           {voiceEnabled && mode === "text" && <ChatVoiceInput locale={locale} disabled={disabled} onTranscript={text => onPrompt([promptValueRef.current.trim(), text].filter(Boolean).join(" "))} />}
@@ -324,11 +333,12 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, selectedId
         <div className="messages-area" role="log" aria-live="polite" aria-label={t.nav.chat}>
           {messageLoading ? <div className="chat-empty"><p>{t.loadingMessages}</p></div>
             : messages.length ? <div className="message-stack">{messages.map(message =>
-              <div key={message.id} className={`chat-message chat-message-${message.role}`}>
+              <div key={message.id} className={`chat-message chat-message-${message.role}${message.status === "error" ? " chat-message-error" : ""}`}>
                 <span className="message-icon" aria-hidden="true">{message.role === "assistant" ? <BrandMark /> : (user.name?.trim()[0] || user.email[0] || "U").toUpperCase()}</span>
                 <div className="message-body">
                   <span className="message-author">{message.role === "assistant" ? "Ailoom" : user.name || user.email}</span>
                   {(message.text || message.status === "streaming") && <div dir={directionForText(message.text, locale)}>{renderMessageText(message.text || "…")}</div>}
+                  {message.status === "error" && <span className="message-delivery-note">{locale === "fa" ? "ارسال این پیام تأیید نشد؛ متن برای تلاش دوباره اینجاست." : "Delivery could not be confirmed. Your message is kept here for retry."}</span>}
                   {message.blocks?.filter(block => block.type !== "text").map((block, index) => {
                     if (block.type === "sources") return <div className="message-sources" key={`sources-${index}`}><strong><BookOpen size={16} aria-hidden="true" />{t.sourceLinks}</strong><div>{block.sources?.map(source => <a key={source.url} href={source.url} target="_blank" rel="noopener noreferrer">{source.title}<ArrowRight size={14} aria-hidden="true" /></a>)}</div></div>;
                     const url = block.url ?? (block.assetId ? `/api/assets/${encodeURIComponent(block.assetId)}` : "");
@@ -1045,9 +1055,11 @@ export default function WorkspaceApp() {
         if (catalog.models.length) {
           const unique = new Map<string, ChatModel>();
           unique.set(catalog.defaultModelId, { id: catalog.defaultModelId, name: "Smart choice" });
-          for (const item of catalog.models) unique.set(item.id, item);
-          setChatModels([...unique.values()]);
-          setModels(previous => ({ ...previous, chat: unique.has(previous.chat) ? previous.chat : catalog.defaultModelId }));
+          for (const item of catalog.models) if (!unique.has(item.id)) unique.set(item.id, item);
+          const ordered = prepareChatModelCatalog([...unique.values()]);
+          const available = new Set(ordered.map(item => item.id));
+          setChatModels(ordered);
+          setModels(previous => ({ ...previous, chat: available.has(previous.chat) ? previous.chat : catalog.defaultModelId }));
         }
       })
       .catch(() => { /* Smart choice remains available. */ });
@@ -1091,7 +1103,7 @@ export default function WorkspaceApp() {
     return () => { active = false; };
   }, []);
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
-  useEffect(() => () => { if (attachment) URL.revokeObjectURL(attachment.url); }, [attachment]);
+  useEffect(() => () => { if (attachment) URL.revokeObjectURL(attachment.url); }, [attachment?.url]);
   useEffect(() => { if (authOpen) { previousFocusRef.current = document.activeElement as HTMLElement; closeRef.current?.focus(); document.body.style.overflow = "hidden"; } else { document.body.style.overflow = ""; } return () => { document.body.style.overflow = ""; }; }, [authOpen]);
   useEffect(() => { if (!notice) return; const timeout = window.setTimeout(() => setNotice(""), 3900); return () => window.clearTimeout(timeout); }, [notice]);
 
@@ -1438,6 +1450,7 @@ export default function WorkspaceApp() {
       { id: userId, role: "user", text: prompt, blocks: attachment ? [{ type: "image", url: attachment.url, alt: attachment.name }] : [] },
       { id: assistantId, role: "assistant", text: t.generationRunning, status: "streaming" }
     ]);
+    updateDraft("chat", "");
     try {
       let assetId = attachment?.assetId;
       if (attachment && !assetId) {
@@ -1505,7 +1518,6 @@ export default function WorkspaceApp() {
         setMessages(previous => previous.map(item => item.id === userId
           ? { ...item, blocks: assetId ? [{ type: "image" as const, assetId, alt: attachment?.name }] : [] }
           : item.id === assistantId ? assistant : item));
-        updateDraft("chat", "");
         setAttachment(null);
       });
       imageRequestRef.current = null;
@@ -1513,8 +1525,9 @@ export default function WorkspaceApp() {
       void refreshConversations();
     } catch (error) {
       context.run(() => {
-        setMessages(previous => previous.filter(item => item.id !== userId && item.id !== assistantId));
+        setMessages(previous => previous.filter(item => item.id !== assistantId).map(item => item.id === userId ? { ...item, status: "error" } : item));
         setChatError(error instanceof Error ? error.message : t.generationFailed);
+        setDrafts(previous => previous.chat ? previous : { ...previous, chat: prompt });
       });
     } finally {
       pendingRef.current = false;
@@ -1543,6 +1556,7 @@ export default function WorkspaceApp() {
     setChatPending(true);
     setChatError("");
     setMessages(previous => [...previous, { id: userId, role: "user", text: message, blocks: attachment ? [{ type: attachment.mime === "application/pdf" ? "file" : "image", url: attachment.url, alt: attachment.name }] : [] }, { id: assistantId, role: "assistant", text: "", status: "streaming" }]);
+    updateDraft("chat", "");
     try {
       let assetId = attachment?.assetId;
       if (attachment && !assetId) {
@@ -1583,7 +1597,7 @@ export default function WorkspaceApp() {
           setSelectedConversationId(conversationId);
           setSelectedProjectId(typeof body?.conversation?.projectId === "string" ? body.conversation.projectId : null);
           setMessages(messagesFromPayload(body));
-          if (clearDraft) { updateDraft("chat", ""); setAttachment(null); }
+          if (clearDraft) setAttachment(null);
           setSpecialistId(null);
         });
         clearPending();
@@ -1678,7 +1692,6 @@ export default function WorkspaceApp() {
       clearPending();
       setChatNeedsDecision(false);
       context.run(() => {
-        updateDraft("chat", "");
         if (assetId) setMessages(previous => previous.map(item => item.id === userId ? { ...item, blocks: [{ type: attachment?.mime === "application/pdf" ? "file" : "image", assetId, alt: attachment?.name }] } : item));
         setAttachment(null);
         setSpecialistId(null);
@@ -1686,8 +1699,9 @@ export default function WorkspaceApp() {
       void refreshConversations();
     } catch (error) {
       context.run(() => {
-        setMessages(previous => previous.filter(item => item.id !== userId && item.id !== assistantId));
+        setMessages(previous => previous.filter(item => item.id !== assistantId).map(item => item.id === userId ? { ...item, status: "error" } : item));
         setChatError(error instanceof Error ? error.message : t.sendError);
+        setDrafts(previous => previous.chat ? previous : { ...previous, chat: message });
       });
     } finally {
       pendingRef.current = false;
