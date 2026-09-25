@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, test } from "node:test";
@@ -16,7 +16,7 @@ const { getDb, getSqlite } = await import("../src/server/db");
 const { generationJob, user } = await import("../src/server/db/schema");
 const { claimNextQueuedJob, createGenerationJob, getGenerationJob, transitionGenerationJob } =
   await import("../src/server/content/jobs");
-const { createAsset, listAssets } = await import("../src/server/content/assets");
+const { createAsset, getOwnedAsset, listAssets } = await import("../src/server/content/assets");
 const { createProject, deleteProject } = await import("../src/server/content/projects");
 const { mediaPath, savePrivateFile } = await import("../src/server/storage/private-files");
 const { runMediaWorkerCycle } = await import("../src/server/media/worker");
@@ -226,6 +226,62 @@ test("an expired submission is marked uncertain without another paid POST", asyn
   const finished = getGenerationJob(ownerId, job.id);
   assert.equal(finished?.state, "failed");
   assert.equal(finished?.errorCode, "submission_uncertain");
+});
+
+test("uncertain repair submissions preserve private references for a provider that accepted the task", async () => {
+  const mp4 = Buffer.from([0, 0, 0, 8, 102, 116, 121, 112]);
+  const repairJob = async () => {
+    const references = [];
+    for (let index = 0; index < 2; index++) {
+      const file = await savePrivateFile(mp4, "video/mp4");
+      references.push(createAsset(ownerId, { ...file, source: "generation", internal: true }));
+    }
+    const job = createGenerationJob(ownerId, {
+      kind: "edit", provider: "fal", providerModel: "fal-ai/ltx-2.3-quality/inpaint",
+      payload: { request: { modelId: "fal-ai/ltx-2.3-quality/inpaint",
+        operation: "temporal_inpaint", prompt: "Repair two frames" },
+      repair: { sourceAssetId: randomUUID(), contextAssetIds: references.map(item => item.id),
+        plan: { targetStartSec: 1, targetEndSec: 2 } } }
+    });
+    return { job, references };
+  };
+  const assertReferencesRemain = (references: Awaited<ReturnType<typeof repairJob>>["references"]) => {
+    for (const reference of references) {
+      assert.ok(getOwnedAsset(ownerId, reference.id));
+      assert.ok(existsSync(mediaPath(reference.storageKey)));
+    }
+  };
+
+  const ambiguous = await repairJob();
+  await runMediaWorkerCycle({
+    submitMediaRequest: async () => { throw Object.assign(new Error("Response lost"),
+      { kind: "uncertain_submission" }); }
+  });
+  assert.equal(getGenerationJob(ownerId, ambiguous.job.id)?.errorCode, "submission_uncertain");
+  assertReferencesRemain(ambiguous.references);
+
+  const transport = await repairJob();
+  await runMediaWorkerCycle({ submitMediaRequest: async () => { throw new Error("Socket closed after POST"); } });
+  assert.equal(getGenerationJob(ownerId, transport.job.id)?.errorCode, "submission_uncertain");
+  assertReferencesRemain(transport.references);
+
+  const stale = await repairJob();
+  assert.equal(claimNextQueuedJob(randomUUID())?.id, stale.job.id);
+  getDb().update(generationJob).set({ leaseExpiresAt: new Date(0) })
+    .where(eq(generationJob.id, stale.job.id)).run();
+  await runMediaWorkerCycle();
+  assert.equal(getGenerationJob(ownerId, stale.job.id)?.errorCode, "submission_uncertain");
+  assertReferencesRemain(stale.references);
+
+  const rejected = await repairJob();
+  await runMediaWorkerCycle({ submitMediaRequest: async () => {
+    throw Object.assign(new Error("Insufficient provider credit"), { status: 402 });
+  } });
+  assert.equal(getGenerationJob(ownerId, rejected.job.id)?.errorCode, "provider_credit_required");
+  for (const reference of rejected.references) {
+    assert.equal(getOwnedAsset(ownerId, reference.id), null);
+    assert.equal(existsSync(mediaPath(reference.storageKey)), false);
+  }
 });
 
 test("an expired poll cannot publish its output after another worker takes over", async () => {

@@ -75,6 +75,25 @@ test("older conversations and messages remain reachable through cursors", () => 
   assert.equal(chat.listMessages(alice, thread.id), null);
 });
 
+test("project conversation pages bypass newer chats in other projects and validate their cursor", () => {
+  const selected = projects.createProject(bob, { name: "Older project" });
+  const other = projects.createProject(bob, { name: "Other project" });
+  const expected = Array.from({ length: 5 }, (_, index) =>
+    chat.createConversation(bob, { title: `Project conversation ${index}`, projectId: selected.id }).id);
+  const foreignCursor = chat.createConversation(bob, { title: "Another project", projectId: other.id });
+  for (let index = 0; index < 60; index++) chat.createConversation(bob, { title: `New unfiled ${index}` });
+
+  const first = chat.listConversations(bob, { projectId: selected.id, limit: 2 });
+  const second = chat.listConversations(bob, { projectId: selected.id, limit: 2, cursor: first.at(-1)?.id });
+  const third = chat.listConversations(bob, { projectId: selected.id, limit: 2, cursor: second.at(-1)?.id });
+  assert.deepEqual(new Set([...first, ...second, ...third].map(item => item.id)), new Set(expected));
+  assert.deepEqual([first.length, second.length, third.length], [2, 2, 1]);
+  assert.throws(() => chat.listConversations(bob, { projectId: selected.id, cursor: foreignCursor.id }),
+    /Resource is unavailable/);
+  assert.throws(() => chat.listConversations(alice, { projectId: selected.id }), /Resource is unavailable/);
+  assert.throws(() => chat.listConversations(bob, { projectId: "not-a-uuid" }));
+});
+
 test("specialist context survives follow-up turns and reopening without user-text promotion", () => {
   const specialist = chat.createConversation(alice, { title: "Skin question" });
   chat.appendMessage(alice, specialist.id, {

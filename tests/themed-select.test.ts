@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ThemedSelect, selectChoices } from "../src/components/themed-select";
+import { ThemedSelect, selectChoices, selectEmptyMessage, selectSearchLabel } from "../src/components/themed-select";
 
 test("themed select renders the chosen option as an accessible combobox", () => {
   const markup = renderToStaticMarkup(createElement(ThemedSelect, {
@@ -32,4 +32,15 @@ test("themed select does not display a different option for a stale controlled v
   }));
   assert.match(markup, /ailoom-select-value">—<\/span>/);
   assert.doesNotMatch(markup, /Different private video<\/span>/);
+});
+
+test("searchable select labels its filter for the selected field and locale", () => {
+  assert.equal(selectSearchLabel("Duration", "en"), "Search Duration");
+  assert.equal(selectSearchLabel("مدت", "fa"), "جست‌وجوی مدت");
+  assert.equal(selectSearchLabel("Model · 19", "en"), "Search Model");
+  assert.equal(selectSearchLabel("مدل · ۱۹", "fa"), "جست‌وجوی مدل");
+  assert.equal(selectSearchLabel(undefined, "en"), "Search options");
+  assert.equal(selectSearchLabel(undefined, "fa"), "جست‌وجوی گزینه‌ها");
+  assert.equal(selectEmptyMessage("en"), "No matching options.");
+  assert.equal(selectEmptyMessage("fa"), "گزینه‌ای پیدا نشد.");
 });

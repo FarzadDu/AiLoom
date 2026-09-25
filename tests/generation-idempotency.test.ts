@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { generationRequestIdentity, parsePendingGeneration } from "../src/components/generation-idempotency";
+import { generationRequestIdentity, parsePendingGeneration, uncertainGenerationMatches } from "../src/components/generation-idempotency";
 
 test("same private asset request retains identity across renewed signed URLs", () => {
   const common = { modelId: "fal-ai/qwen-image-edit", operation: "image_edit", prompt: "Keep the product red" };
@@ -30,4 +30,13 @@ test("project assignment changes media request identity", () => {
   const second = generationRequestIdentity("/api/generations", { ...input, projectId: "79a833da-13f7-451e-aac9-62605704bf36" });
   assert.notEqual(unfiled, first);
   assert.notEqual(first, second);
+});
+
+test("unknown provider outcome blocks only the matching retained media request", () => {
+  const pending = { identity: "request A", key: "8a3c765a-945b-4f52-b8e3-98962051f975" };
+  const job = { id: pending.key, state: "failed", errorCode: "submission_uncertain" };
+  assert.equal(uncertainGenerationMatches(job, pending, "request A"), true);
+  assert.equal(uncertainGenerationMatches(job, pending, "request B"), false);
+  assert.equal(uncertainGenerationMatches({ ...job, errorCode: "provider_rejected" }, pending, "request A"), false);
+  assert.equal(uncertainGenerationMatches(job, { ...pending, key: "another" }, "request A"), false);
 });

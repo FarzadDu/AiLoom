@@ -16,7 +16,8 @@ const labels = {
     recording: "Recording… Select the microphone again to stop. One minute maximum.",
     added: "Transcript added to your draft. Review it before sending.",
     unsupported: "This browser cannot record audio here.",
-    failed: "Voice transcription failed. Check microphone access and provider credit, then try again."
+    failed: "Voice transcription failed. Check microphone access and provider credit, then try again.",
+    uncertain: "The transcription result could not be confirmed. The recording was not resent; recording again may create another provider charge."
   },
   fa: {
     start: "ضبط صدا؛ ElevenLabs آن را رونویسی می‌کند",
@@ -25,7 +26,8 @@ const labels = {
     recording: "در حال ضبط… برای پایان دوباره میکروفون را بزن. حداکثر یک دقیقه.",
     added: "متن صدا به پیش‌نویس اضافه شد. پیش از ارسال آن را بررسی کن.",
     unsupported: "این مرورگر در این صفحه امکان ضبط صدا ندارد.",
-    failed: "رونویسی صدا انجام نشد. دسترسی میکروفون و اعتبار سرویس را بررسی و دوباره تلاش کن."
+    failed: "رونویسی صدا انجام نشد. دسترسی میکروفون و اعتبار سرویس را بررسی و دوباره تلاش کن.",
+    uncertain: "نتیجهٔ رونویسی مشخص نیست. فایل دوباره ارسال نشد؛ ضبط دوباره ممکن است هزینهٔ دیگری ایجاد کند."
   }
 } as const;
 
@@ -78,9 +80,17 @@ export function ChatVoiceInput({ locale, disabled, onTranscript }: {
       const extension = mime === "audio/mp4" ? "m4a" : mime === "audio/ogg" ? "ogg" : "webm";
       form.set("file", new File([blob], `voice-note.${extension}`, { type: mime }));
       const response = await fetch("/api/audio/transcribe", {
-        method: "POST", credentials: "same-origin", body: form, signal: controller.signal
+        method: "POST", credentials: "same-origin", body: form, signal: controller.signal,
+        headers: { "Idempotency-Key": crypto.randomUUID() }
       });
-      if (!response.ok) throw new Error("Transcription unavailable");
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null) as { status?: string } | null;
+        if (["processing", "completed", "uncertain"].includes(failure?.status ?? "")) {
+          if (mountedRef.current) setNotice(t.uncertain);
+          return;
+        }
+        throw new Error("Transcription unavailable");
+      }
       const payload = await response.json() as { text?: unknown };
       if (typeof payload.text !== "string" || !payload.text.trim()) throw new Error("Empty transcript");
       if (!mountedRef.current) return;

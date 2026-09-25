@@ -52,16 +52,19 @@ export function getConversationSystemTexts(userId: string, conversationId: strin
     });
 }
 
-export function listConversations(userId: string, options: { limit?: number; cursor?: string } = {}) {
+export function listConversations(userId: string, options: { limit?: number; cursor?: string; projectId?: string } = {}) {
   const limit = z.number().int().min(1).max(100).parse(options.limit ?? 50);
+  const projectId = options.projectId === undefined ? undefined : z.uuid().parse(options.projectId);
+  requireOwnedProject(userId, projectId);
   const cursor = options.cursor ? getConversation(userId, options.cursor) : null;
   if (options.cursor && !cursor) return [];
+  if (cursor && projectId && cursor.projectId !== projectId) throw new ContentAccessError();
   const olderThan = cursor ? or(
     lt(conversation.updatedAt, cursor.updatedAt),
     and(eq(conversation.updatedAt, cursor.updatedAt), lt(conversation.id, cursor.id))
   ) : undefined;
   return getDb().select().from(conversation)
-    .where(and(eq(conversation.ownerId, userId), olderThan))
+    .where(and(eq(conversation.ownerId, userId), projectId ? eq(conversation.projectId, projectId) : undefined, olderThan))
     .orderBy(desc(conversation.updatedAt), desc(conversation.id)).limit(limit).all();
 }
 

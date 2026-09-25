@@ -47,10 +47,11 @@ import { firstLastRequestIdentity, type FirstLastControls } from "./first-last-r
 import { repairRequestIdentity } from "./repair-request";
 import { InpaintCanvas } from "./inpaint-canvas";
 import { ChatVoiceInput } from "./chat-voice-input";
-import { generationRequestIdentity, parsePendingGeneration } from "./generation-idempotency";
+import { generationRequestIdentity, parsePendingGeneration, uncertainGenerationMatches } from "./generation-idempotency";
 import { parsePendingChatTurn, reconcileCompletedChatTurn, samePendingTurn, type ChatTurnInput, type PendingChatTurn } from "./chat-turn-idempotency";
 import { specialistChatTransition, type SpecialistChatId } from "./specialist-chat";
 import { captureChatContext } from "./chat-context-lease";
+import { appendOptimisticChatTurn, chatScrollIsNearBottom, createSerialAsyncQueue, type FailedOptimisticTurn } from "./chat-ui-state";
 import { ThemedSelect } from "./themed-select";
 import { retainImageReferenceOnModeChange, usableReference } from "./media-reference";
 
@@ -124,6 +125,12 @@ const defaultModels: Models = { chat: "openrouter/auto", image: "fal-ai/flux-2-p
 
 function isMediaView(view: View): view is MediaView {
   return mediaViews.includes(view as MediaView);
+}
+
+function uncertainGenerationMessage(locale: Locale): string {
+  return locale === "fa"
+    ? "وضعیت ارسال به سرویس‌دهنده نامشخص است. تکرار همین درخواست ممکن است هزینهٔ دوباره داشته باشد؛ Ailoom آن را خودکار دوباره نمی‌فرستد."
+    : "The provider outcome is unknown. Repeating this request may incur another charge, so Ailoom will not resend it automatically.";
 }
 
 function readStorage(key: string): string | null {
@@ -359,14 +366,20 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, historyLoa
   inputRef: RefObject<HTMLTextAreaElement | null>;
 }) {
   const t = copy[locale];
-  const endRef = useRef<HTMLDivElement>(null);
+  const messagesAreaRef = useRef<HTMLDivElement>(null);
+  const followingReplyRef = useRef(true);
   const lastRenderedThread = useRef<{ id: string | null; firstId: string | null }>({ id: null, firstId: null });
   useEffect(() => {
-    if (messageLoading) return;
+    if (messageLoading) {
+      lastRenderedThread.current = { id: null, firstId: null };
+      return;
+    }
     const firstId = messages[0]?.id ?? null;
     const previous = lastRenderedThread.current;
-    if (previous.id !== selectedId || previous.firstId === firstId || !previous.firstId) {
-      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (previous.id !== selectedId || (!previous.firstId && firstId)) followingReplyRef.current = true;
+    if (followingReplyRef.current && (previous.id !== selectedId || previous.firstId === firstId || !previous.firstId)) {
+      const area = messagesAreaRef.current;
+      if (area) area.scrollTop = area.scrollHeight;
     }
     lastRenderedThread.current = { id: selectedId, firstId };
   }, [messages, selectedId, messageLoading]);
@@ -393,7 +406,10 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, historyLoa
           else onSelectProject(projectId);
         }}><option value="">{projectLabel(locale, null)}</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</ThemedSelect></div><span className="chat-model-badge">{modelList.find(item => item.id === model)?.name ?? t.smartChoice}</span></div></div>
         {activeProject?.description && <div className="chat-project-note" title={locale === "fa" ? "در چت متنی برای OpenRouter ارسال می‌شود" : "Sent to OpenRouter in text chats"}><FolderClosed size={14} aria-hidden="true" /><span>{activeProject.description}</span></div>}
-        <div className="messages-area" role="log" aria-live="polite" aria-label={t.nav.chat}>
+        <div className="messages-area" ref={messagesAreaRef} onScroll={event => {
+          const area = event.currentTarget;
+          followingReplyRef.current = chatScrollIsNearBottom(area.scrollTop, area.clientHeight, area.scrollHeight);
+        }} role="log" aria-live="polite" aria-label={t.nav.chat}>
           {messageLoading ? <div className="chat-empty"><p>{t.loadingMessages}</p></div>
             : messages.length ? <div className="message-stack">{hasOlderMessages && <button type="button" className="messages-more-button" onClick={onLoadOlderMessages} disabled={olderMessagesLoading}>{olderMessagesLoading ? locale === "fa" ? "در حال بارگذاری…" : "Loading…" : locale === "fa" ? "پیام‌های قدیمی‌تر" : "Older messages"}</button>}{messages.map(message =>
               <div key={message.id} className={`chat-message chat-message-${message.role}${message.status === "error" ? " chat-message-error" : ""}`}>
@@ -409,7 +425,7 @@ function ChatWorkspace({ locale, user, conversations, historyLoading, historyLoa
                   })}
                   {message.status === "streaming" && <span className="stream-cursor" aria-hidden="true" />}
                 </div>
-              </div>)}<div ref={endRef} /></div>
+              </div>)}</div>
             : <div className="chat-empty"><BrandMark /><h1>{t.chatHeadingFirst}<br /><em>{t.chatHeadingSecond}</em></h1><p>{t.noMessages}</p></div>}
         </div>
         <div className="chat-compose-wrap">
@@ -486,9 +502,11 @@ function TranscriptionPanel({ locale, signedIn, onLogin }: { locale: Locale; sig
   const [error, setError] = useState("");
   const [result, setResult] = useState<TranscriptResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const [newRequestAvailable, setNewRequestAvailable] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const requestRef = useRef<AbortController | null>(null);
   const submittingRef = useRef(false);
+  const submissionRef = useRef<{ file: File; language: string; diarize: boolean; key: string } | null>(null);
 
   useEffect(() => {
     if (!file) { setPreviewUrl(null); return; }
@@ -502,8 +520,10 @@ function TranscriptionPanel({ locale, signedIn, onLogin }: { locale: Locale; sig
     const selected = event.currentTarget.files?.[0] ?? null;
     event.currentTarget.value = "";
     if (!selected) return;
+    submissionRef.current = null;
     setResult(null);
     setCopied(false);
+    setNewRequestAvailable(false);
     if (!selected.size || selected.size > 50_000_000) {
       setFile(null);
       setError(t.transcriptionTooLarge);
@@ -522,20 +542,38 @@ function TranscriptionPanel({ locale, signedIn, onLogin }: { locale: Locale; sig
     setError("");
     setResult(null);
     setCopied(false);
+    setNewRequestAvailable(false);
     const controller = new AbortController();
     requestRef.current = controller;
+    const previous = submissionRef.current;
+    const key = previous?.file === file && previous.language === language && previous.diarize === diarize
+      ? previous.key : crypto.randomUUID();
+    submissionRef.current = { file, language, diarize, key };
     try {
       const form = new FormData();
       form.set("file", file);
       if (language !== "auto") form.set("languageCode", language);
       form.set("diarize", diarize ? "true" : "false");
       const response = await fetch("/api/audio/transcribe", {
-        method: "POST", credentials: "same-origin", body: form, signal: controller.signal
+        method: "POST", credentials: "same-origin", headers: { "Idempotency-Key": key },
+        body: form, signal: controller.signal
       });
-      if (!response.ok) throw new Error(await responseError(response));
+      if (!response.ok) {
+        const body = await response.clone().json().catch(() => null);
+        const status = body && typeof body === "object" && "status" in body ? body.status : null;
+        if (status === "failed" || response.status >= 400 && response.status < 500 &&
+          response.status !== 401 && response.status !== 403 && response.status !== 409)
+          submissionRef.current = null;
+        if (response.status === 409 && status === null) submissionRef.current = null;
+        if (status === "completed" || status === "uncertain") setNewRequestAvailable(true);
+        throw new Error(await responseError(response));
+      }
       const transcript = transcriptFromPayload(await response.json());
       if (!transcript) throw new Error(t.transcriptionInvalidResponse);
-      if (!controller.signal.aborted) setResult(transcript);
+      if (!controller.signal.aborted) {
+        submissionRef.current = null;
+        setResult(transcript);
+      }
     } catch (reason) {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t.transcriptionInvalidResponse);
     } finally {
@@ -583,15 +621,18 @@ function TranscriptionPanel({ locale, signedIn, onLogin }: { locale: Locale; sig
         <div className="inspector-heading"><span><SlidersHorizontal size={19} aria-hidden="true" />{t.input}</span></div>
         <input ref={fileRef} className="sr-only" type="file" accept=".mp3,.wav,.ogg,.m4a,.mp4,.webm,audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/webm,video/mp4,video/webm" onChange={chooseFile} aria-label={t.transcriptionChooseFile} />
         <button className="outline-action transcription-file-button" type="button" onClick={() => fileRef.current?.click()} disabled={pending}><Upload size={17} aria-hidden="true" />{t.transcriptionChooseFile}</button>
-        {file && <div className="file-chip"><span title={file.name}>{file.name}</span><button type="button" aria-label={t.removeFile} disabled={pending} onClick={() => { setFile(null); setResult(null); setError(""); }}><X size={15} /></button></div>}
+        {file && <div className="file-chip"><span title={file.name}>{file.name}</span><button type="button" aria-label={t.removeFile} disabled={pending} onClick={() => { submissionRef.current = null; setFile(null); setResult(null); setError(""); setNewRequestAvailable(false); }}><X size={15} /></button></div>}
         <p className="transcription-file-hint">{t.transcriptionDescription}</p>
         <div className="inspector-divider" />
         <div className="inspector-heading subtle"><span>{t.settings}</span></div>
-        <div className="form-field"><label htmlFor="transcription-language">{t.language}</label><div className="select-shell"><ThemedSelect id="transcription-language" value={language} onValueChange={setLanguage} disabled={pending}><option value="auto">{t.automatic}</option><option value="en">{t.english}</option><option value="fa">{t.persian}</option></ThemedSelect></div></div>
-        <label className="toggle-field"><input type="checkbox" checked={diarize} onChange={event => setDiarize(event.target.checked)} disabled={pending} /><span>{t.transcriptionDiarize}</span></label>
+        <div className="form-field"><label htmlFor="transcription-language">{t.language}</label><div className="select-shell"><ThemedSelect id="transcription-language" value={language} onValueChange={value => { submissionRef.current = null; setNewRequestAvailable(false); setLanguage(value); }} disabled={pending}><option value="auto">{t.automatic}</option><option value="en">{t.english}</option><option value="fa">{t.persian}</option></ThemedSelect></div></div>
+        <label className="toggle-field"><input type="checkbox" checked={diarize} onChange={event => { submissionRef.current = null; setNewRequestAvailable(false); setDiarize(event.target.checked); }} disabled={pending} /><span>{t.transcriptionDiarize}</span></label>
         <div className="inspector-spacer" />
         <button className="primary-action" type="button" onClick={() => void transcribe()} disabled={pending}>{pending ? t.transcriptionWorking : t.transcriptionAction}<ArrowRight size={17} aria-hidden="true" /></button>
         {error && <p className="transcription-error" role="alert">{error}</p>}
+        {newRequestAvailable && <button className="outline-action" type="button" disabled={pending} onClick={() => {
+          submissionRef.current = null; setNewRequestAvailable(false); setError("");
+        }}>{locale === "fa" ? "درخواست تازه با هزینهٔ جداگانه" : "Start a new paid request"}</button>}
       </aside>
     </div>
     {result && <section className="transcription-result" aria-labelledby="transcription-result-title">
@@ -602,14 +643,15 @@ function TranscriptionPanel({ locale, signedIn, onLogin }: { locale: Locale; sig
   </>;
 }
 
-function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, preview, onFile, onRemoveFile, onUseReference, onLastFrameChange, availableModels, catalogState, onCatalogRetry, job, jobError, busy, initialMode, signedIn, onLogin, projects, projectId, onProjectChange }: {
+function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, preview, onFile, onRemoveFile, onUseReference, onLastFrameChange, availableModels, catalogState, onCatalogRetry, job, jobError, uncertainRequestBlocked, onNewUncertainRequest, busy, initialMode, signedIn, onLogin, projects, projectId, onProjectChange }: {
   view: MediaView; locale: Locale; model: string; onModel: (value: string) => void;
   draft: string; onDraft: (value: string) => void; onSubmit: (options: StudioRequestOptions) => void;
   preview: LocalFile | null; onFile: (event: ChangeEvent<HTMLInputElement>) => void; onRemoveFile: () => void;
   onUseReference: (reference: LocalFile) => void;
   onLastFrameChange: () => void;
   availableModels: MediaModel[]; catalogState: "loading" | "ready" | "error"; onCatalogRetry: () => void;
-  job: MediaJob | null; jobError: string; busy: boolean; initialMode: number; signedIn: boolean; onLogin: () => void;
+  job: MediaJob | null; jobError: string; uncertainRequestBlocked: boolean; onNewUncertainRequest: () => void;
+  busy: boolean; initialMode: number; signedIn: boolean; onLogin: () => void;
   projects: ChatProject[]; projectId: string | null; onProjectChange: (id: string | null) => void;
 }) {
   const t = copy[locale];
@@ -862,17 +904,23 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
             {selectedAsset ? <div className="generated-results"><GeneratedResult key={selectedAsset.id} asset={shownAssets[0]} locale={locale} initialVisibility={selectedAsset.visibility} onVisibilityChange={visibility => onVisibilityChange(selectedAsset.id, visibility)} onUseReference={view === "image" || view === "video" ? asset => void useOutputAsReference(asset) : undefined} /></div>
               : showFirstLast && (preview || lastFrame) ? <div className="frame-pair"><div className="frame-card"><strong>{t.firstFrame}</strong>{preview?.mime.startsWith("image/") ? <img src={preview.url} alt={preview.name} /> : <button type="button" onClick={() => fileRef.current?.click()}>{t.chooseFirstFrame}</button>}</div><div className="frame-card"><strong>{t.lastFrame}</strong>{lastFrame ? <img src={lastFrame.url} alt={lastFrame.name} /> : <button type="button" onClick={() => lastFrameRef.current?.click()}>{t.chooseLastFrame}</button>}</div></div>
               : preview && !(showCharacter && showCharacterOutput && displayJob) ? (showInpaint && ["image/png", "image/jpeg"].includes(preview.mime) ? <InpaintCanvas key={preview.url} src={preview.url} alt={preview.name}
-                  labels={{ brush: t.inpaintBrush, clear: t.inpaintClear, hint: t.inpaintHint, invalid: t.inpaintInvalid }}
+                  labels={{ brush: t.inpaintBrush, clear: t.inpaintClear, hint: t.inpaintHint, invalid: t.inpaintInvalid,
+                    uploadMask: locale === "fa" ? "بارگذاری ماسک PNG" : "Upload PNG mask",
+                    invalidMask: locale === "fa" ? "ماسک باید فایل PNG زیر ۸ مگابایت و هم‌اندازهٔ تصویر اصلی باشد." : "Use a PNG mask under 8 MB with the same dimensions as the source image.",
+                    maskReady: locale === "fa" ? "ماسک آماده است" : "Mask ready" }}
                   onMaskChange={setInpaintMask} />
                 : (view === "image" || view === "video" && activeMode === 1) && preview.mime.startsWith("image/") ? <img className="uploaded-media" src={preview.url} alt={preview.name} /> : view === "video" && preview.mime.startsWith("video/") ? <video className="uploaded-media" src={preview.url} controls onLoadedMetadata={event => handleMetadata(event.currentTarget.duration)} /> : null)
               : displayJob?.state === "succeeded" && shownAssets.length ? <div className="generated-results">{shownAssets.map((asset, index) => <GeneratedResult asset={asset} locale={locale} onVisibilityChange={asset.id ? visibility => onVisibilityChange(asset.id!, visibility) : undefined} onUseReference={view === "image" || view === "video" ? item => void useOutputAsReference(item) : undefined} key={asset.id ?? asset.url + index} />)}</div>
               : displayJob?.state === "succeeded" ? <div className="job-status"><Check size={27} aria-hidden="true" /><strong>{t.generationDone}</strong><p>{t.generationOutputMissing}</p></div>
               : displayJob && ["queued", "submitting", "running"].includes(displayJob.state) ? <div className="job-status"><span className="job-spinner" aria-hidden="true" /><strong>{displayJob.state === "running" ? t.generationRunning : t.generationQueued}</strong><p>{t.generationHint}</p></div>
-              : displayJob?.state === "failed" ? <div className="job-status"><X size={27} aria-hidden="true" /><strong>{t.generationFailed}</strong><p>{displayJob.errorCode || jobError}</p></div>
+              : displayJob?.state === "failed" ? <div className="job-status"><X size={27} aria-hidden="true" /><strong>{t.generationFailed}</strong><p>{displayJob.errorCode === "submission_uncertain" ? uncertainGenerationMessage(locale) : displayJob.errorCode || jobError}</p></div>
               : displayJob?.state === "cancelled" ? <div className="job-status"><X size={27} aria-hidden="true" /><strong>{t.generationCancelled}</strong></div> : null}
             {!preview && !lastFrame && !displayJob && <div className="canvas-empty"><span className="canvas-empty-icon"><CurrentIcon size={30} aria-hidden="true" /></span><strong>{t.canvasReady}</strong><p>{view === "audio" ? activeMode === 1 ? t.musicCanvasHint : t.audioCanvasHint : showUpscale ? t.upscaleDescription : showFirstLast ? t.firstLastHint : needsReference ? t.referenceHint : t.addReference}</p>{needsReference && <button type="button" onClick={() => fileRef.current?.click()}><Upload size={18} aria-hidden="true" />{showFirstLast ? t.chooseFirstFrame : t.dropFile}</button>}</div>}
           </div>
           {(jobError || lastFrameError) && <div className="studio-error" role="alert">{lastFrameError || jobError}</div>}
+          {uncertainRequestBlocked && !selectedAsset && <button type="button" className="outline-action" onClick={onNewUncertainRequest}>
+            {locale === "fa" ? "شروع درخواست تازه با احتمال هزینهٔ دوباره" : "Start a new request with possible extra cost"}
+          </button>}
            {displayJob && <div className="cost-note">{displayJob.costEstimateMicrosUsd !== null && displayJob.costEstimateMicrosUsd !== undefined ? `${t.priceEstimate}: $${(displayJob.costEstimateMicrosUsd / 1_000_000).toFixed(3)} USD` : t.noPriceEstimate}</div>}
            {showRepair && <div className="timeline"><div className="timeline-header"><span><Clock3 size={15} aria-hidden="true" />00:00</span><span>{Math.floor(clipDuration / 60).toString().padStart(2, "0")}:{(clipDuration % 60).toString().padStart(2, "0")}</span></div><div className="timeline-track"><div className="timeline-selection" style={{ insetInlineStart: `${repairStart / clipDuration * 100}%`, width: `${Math.max(2, (repairEnd - repairStart) / clipDuration * 100)}%` }} /></div><span className="timeline-caption">{t.repairHint}</span></div>}
           {view === "audio" && <div className="canvas-footnote"><AudioLines size={17} aria-hidden="true" />{activeMode === 1 ? t.musicModeHint : t.audioModeHint}</div>}
@@ -1060,6 +1108,9 @@ export default function WorkspaceApp() {
   const pendingRef = useRef(false);
   const imageRequestRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
   const textRequestRef = useRef<PendingChatTurn | null>(null);
+  const failedOptimisticTurnRef = useRef<FailedOptimisticTurn | null>(null);
+  const modelSelectionVersionRef = useRef(0);
+  const modelSaveQueueRef = useRef(createSerialAsyncQueue());
   const authEpochRef = useRef(0);
   const historyRequestEpochRef = useRef(0);
   const conversationLoadEpochRef = useRef(0);
@@ -1212,10 +1263,20 @@ export default function WorkspaceApp() {
   const updateDraft = (target: View, value: string) => setDrafts(previous => ({ ...previous, [target]: value }));
   const updateModel = (target: View, value: string) => {
     setModels(previous => ({ ...previous, [target]: value }));
-    if (target === "chat" && user) {
-      void fetch("/api/chat/model", { method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modelId: value }) })
-        .then(async response => { if (!response.ok) throw new Error(await responseError(response)); })
-        .catch(error => setNotice(error instanceof Error ? error.message : copy[locale].modelUnavailable));
+    if (target === "chat") {
+      const selectionVersion = ++modelSelectionVersionRef.current;
+      if (user) {
+        const authEpoch = authEpochRef.current;
+        void modelSaveQueueRef.current(async () => {
+          if (authEpoch !== authEpochRef.current) return;
+          const response = await fetch("/api/chat/model", { method: "PUT", credentials: "same-origin",
+            headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modelId: value }) });
+          if (!response.ok) throw new Error(await responseError(response));
+        }).catch(error => {
+          if (authEpoch === authEpochRef.current && selectionVersion === modelSelectionVersionRef.current)
+            setNotice(error instanceof Error ? error.message : copy[locale].modelUnavailable);
+        });
+      }
     }
   };
   const openLogin = (draft = drafts[view], returnView = view) => { setAuthError(""); setLoginDraft(draft); setLoginReturnView(returnView); setAuthOpen(true); };
@@ -1273,6 +1334,7 @@ export default function WorkspaceApp() {
     setSpecialistId(transition.specialistId);
     setSelectedConversationId(transition.conversationId);
     setMessages([]);
+    failedOptimisticTurnRef.current = null;
     setHasOlderMessages(false);
     updateDraft("chat", prompt);
     navigate("chat");
@@ -1285,7 +1347,10 @@ export default function WorkspaceApp() {
     setHistoryLoading(true);
     setHistoryLoadingMore(false);
     try {
-      const response = await fetch("/api/chat/conversations", { credentials: "same-origin", cache: "no-store" });
+      const params = new URLSearchParams();
+      if (selectedProjectId) params.set("projectId", selectedProjectId);
+      const response = await fetch(`/api/chat/conversations${params.size ? `?${params}` : ""}`,
+        { credentials: "same-origin", cache: "no-store" });
       if (!response.ok) throw new Error(await responseError(response));
       const page = conversationsFromPayload(await response.json());
       if (epoch !== historyRequestEpochRef.current) return;
@@ -1299,7 +1364,7 @@ export default function WorkspaceApp() {
     } finally {
       if (epoch === historyRequestEpochRef.current) setHistoryLoading(false);
     }
-  }, []);
+  }, [selectedProjectId]);
 
   const loadMoreConversations = async () => {
     const cursor = conversations.at(-1)?.id;
@@ -1307,7 +1372,9 @@ export default function WorkspaceApp() {
     const epoch = historyRequestEpochRef.current;
     setHistoryLoadingMore(true);
     try {
-      const response = await fetch(`/api/chat/conversations?cursor=${encodeURIComponent(cursor)}`, {
+      const params = new URLSearchParams({ cursor });
+      if (selectedProjectId) params.set("projectId", selectedProjectId);
+      const response = await fetch(`/api/chat/conversations?${params}`, {
         credentials: "same-origin", cache: "no-store"
       });
       if (!response.ok) throw new Error(await responseError(response));
@@ -1357,9 +1424,11 @@ export default function WorkspaceApp() {
   useEffect(() => {
     if (!user) return;
     let active = true;
+    const selectionVersion = modelSelectionVersionRef.current;
     fetch("/api/chat/model", { credentials: "same-origin", cache: "no-store" })
       .then(async response => response.ok ? response.json() : null)
-      .then(body => { if (active && typeof body?.modelId === "string") setModels(previous => ({ ...previous, chat: body.modelId })); })
+      .then(body => { if (active && selectionVersion === modelSelectionVersionRef.current && typeof body?.modelId === "string")
+        setModels(previous => ({ ...previous, chat: body.modelId })); })
       .catch(() => { /* The locally saved choice remains available. */ });
     return () => { active = false; };
   }, [user]);
@@ -1411,7 +1480,8 @@ export default function WorkspaceApp() {
     for (const target of mediaViews) {
       const job = mediaJobs[target];
       const pending = genericSubmissionRef.current[target];
-      if (!job || !pending || job.id !== pending.key || !["succeeded", "failed", "cancelled"].includes(job.state)) continue;
+      if (!job || !pending || job.id !== pending.key || !["succeeded", "failed", "cancelled"].includes(job.state) ||
+        uncertainGenerationMatches(job, pending)) continue;
       delete genericSubmissionRef.current[target];
       try { window.sessionStorage.removeItem(`ailoom.mediaPending.${user.id}.${target}`); }
       catch { /* In-memory state is already cleared. */ }
@@ -1445,6 +1515,7 @@ export default function WorkspaceApp() {
     setSpecialistId(null);
     setSelectedConversationId(id);
     setMessages([]);
+    failedOptimisticTurnRef.current = null;
     setMessagesLoading(true);
     setOlderMessagesLoading(false);
     setHasOlderMessages(false);
@@ -1502,6 +1573,7 @@ export default function WorkspaceApp() {
     setSpecialistId(null);
     setSelectedConversationId(null);
     setMessages([]);
+    failedOptimisticTurnRef.current = null;
     setHasOlderMessages(false);
     setChatError("");
     promptRef.current?.focus();
@@ -1516,6 +1588,7 @@ export default function WorkspaceApp() {
     setSelectedProjectId(projectId);
     setSelectedConversationId(null);
     setMessages([]);
+    failedOptimisticTurnRef.current = null;
     setHasOlderMessages(false);
     setChatError("");
   };
@@ -1606,14 +1679,16 @@ export default function WorkspaceApp() {
     const assistantId = `local-assistant-${crypto.randomUUID()}`;
     const initialConversationId = selectedConversationId;
     const initialProjectId = selectedProjectId;
+    const retryIdentity = JSON.stringify(["image", prompt, modelId, attachment?.url ?? null]);
+    const failedTurn = failedOptimisticTurnRef.current;
     const context = captureChatContext(() => conversationLoadEpochRef.current);
     pendingRef.current = true;
     setChatPending(true);
     setChatError("");
-    setMessages(previous => [...previous,
+    setMessages(previous => appendOptimisticChatTurn(previous, failedTurn, retryIdentity,
       { id: userId, role: "user", text: prompt, blocks: attachment ? [{ type: "image", url: attachment.url, alt: attachment.name }] : [] },
-      { id: assistantId, role: "assistant", text: t.generationRunning, status: "streaming" }
-    ]);
+      { id: assistantId, role: "assistant", text: t.generationRunning, status: "streaming" }));
+    if (failedTurn?.identity === retryIdentity) failedOptimisticTurnRef.current = null;
     updateDraft("chat", "");
     try {
       let assetId = attachment?.assetId;
@@ -1690,6 +1765,7 @@ export default function WorkspaceApp() {
     } catch (error) {
       context.run(() => {
         setMessages(previous => previous.filter(item => item.id !== assistantId).map(item => item.id === userId ? { ...item, status: "error" } : item));
+        failedOptimisticTurnRef.current = { id: userId, identity: retryIdentity };
         setChatError(error instanceof Error ? error.message : t.generationFailed);
         setDrafts(previous => previous.chat ? previous : { ...previous, chat: prompt });
       });
@@ -1715,11 +1791,16 @@ export default function WorkspaceApp() {
     const assistantId = `local-assistant-${crypto.randomUUID()}`;
     const initialConversationId = selectedConversationId;
     const initialProjectId = selectedProjectId;
+    const retryIdentity = JSON.stringify(["text", message, models.chat, webSearch, specialistId, attachment?.url ?? null]);
+    const failedTurn = failedOptimisticTurnRef.current;
     const context = captureChatContext(() => conversationLoadEpochRef.current);
     pendingRef.current = true;
     setChatPending(true);
     setChatError("");
-    setMessages(previous => [...previous, { id: userId, role: "user", text: message, blocks: attachment ? [{ type: attachment.mime === "application/pdf" ? "file" : "image", url: attachment.url, alt: attachment.name }] : [] }, { id: assistantId, role: "assistant", text: "", status: "streaming" }]);
+    setMessages(previous => appendOptimisticChatTurn(previous, failedTurn, retryIdentity,
+      { id: userId, role: "user", text: message, blocks: attachment ? [{ type: attachment.mime === "application/pdf" ? "file" : "image", url: attachment.url, alt: attachment.name }] : [] },
+      { id: assistantId, role: "assistant", text: "", status: "streaming" }));
+    if (failedTurn?.identity === retryIdentity) failedOptimisticTurnRef.current = null;
     updateDraft("chat", "");
     try {
       let assetId = attachment?.assetId;
@@ -1866,6 +1947,7 @@ export default function WorkspaceApp() {
     } catch (error) {
       context.run(() => {
         setMessages(previous => previous.filter(item => item.id !== assistantId).map(item => item.id === userId ? { ...item, status: "error" } : item));
+        failedOptimisticTurnRef.current = { id: userId, identity: retryIdentity };
         setChatError(error instanceof Error ? error.message : t.sendError);
         setDrafts(previous => previous.chat ? previous : { ...previous, chat: message });
       });
@@ -1943,6 +2025,7 @@ export default function WorkspaceApp() {
     setProjectError("");
     imageRequestRef.current = null;
     textRequestRef.current = null;
+    failedOptimisticTurnRef.current = null;
     setHistoryLoading(false);
     setSelectedConversationId(null);
     setMessages([]);
@@ -2023,6 +2106,18 @@ export default function WorkspaceApp() {
     } catch (error) {
       setNotice(error instanceof Error ? error.message : t.sessionError);
     }
+  };
+
+  const startNewUncertainGeneration = (target: MediaView) => {
+    const current = genericSubmissionRef.current[target];
+    if (!user || !uncertainGenerationMatches(mediaJobs[target], current)) return;
+    delete genericSubmissionRef.current[target];
+    try { window.sessionStorage.removeItem(`ailoom.mediaPending.${user.id}.${target}`); }
+    catch { /* The in-memory key has already been cleared. */ }
+    setMediaErrors(previous => ({ ...previous, [target]: "" }));
+    setNotice(locale === "fa"
+      ? "درخواست تازه آماده است. زدن «تولید» ممکن است هزینهٔ جداگانه داشته باشد."
+      : "A new request is ready. Pressing Generate may incur another charge.");
   };
 
   const startGeneration = async (target: MediaView, options: StudioRequestOptions) => {
@@ -2312,6 +2407,8 @@ export default function WorkspaceApp() {
           try { previous = parsePendingGeneration(window.sessionStorage.getItem(storageKey), identity) ?? undefined; }
           catch { previous = undefined; }
         }
+        if (uncertainGenerationMatches(mediaJobs[target], previous, identity))
+          throw new Error(uncertainGenerationMessage(locale));
         genericKey = previous?.key ?? crypto.randomUUID();
         genericSubmissionRef.current[target] = { identity, key: genericKey };
         try { window.sessionStorage.setItem(storageKey, JSON.stringify({ identity, key: genericKey })); }
@@ -2368,7 +2465,7 @@ export default function WorkspaceApp() {
         {view === "chat" && (user
           ? <ChatWorkspace locale={locale} user={user} conversations={conversations} historyLoading={historyLoading} historyLoadingMore={historyLoadingMore} hasMoreConversations={hasMoreConversations} onLoadMoreConversations={() => void loadMoreConversations()} selectedId={selectedConversationId} projects={projects} selectedProjectId={selectedProjectId} projectBusy={projectBusy} projectError={projectError} onSelectProject={selectProject} onCreateProject={createChatProject} onUpdateProject={updateChatProject} onDeleteProject={deleteChatProject} onMoveConversation={moveConversation} messages={messages} messageLoading={messagesLoading} olderMessagesLoading={olderMessagesLoading} hasOlderMessages={hasOlderMessages} onLoadOlderMessages={() => void loadOlderMessages()} pending={chatPending} error={chatError} showSeparateRequest={chatNeedsDecision} previousRequestId={chatPreviousRequestId} onSeparateRequest={startSeparateTextRequest} prompt={drafts.chat} onPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} onModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSend={() => void sendChat()} onSelect={id => void selectConversation(id)} onNew={newConversation} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />
           : <ChatLanding locale={locale} prompt={drafts.chat} setPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} setModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSubmit={() => void sendChat()} onNavigate={navigate} onStarter={useWorkflow} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />)}
-        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} onUseReference={setPreview} onLastFrameChange={() => { lastFrameUploadRef.current = null; firstLastSubmissionRef.current = null; }} availableModels={mediaModels.filter(item => item.outputKind === view)} catalogState={mediaCatalogState} onCatalogRetry={() => setMediaCatalogRevision(value => value + 1)} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} onLogin={() => openLogin("", view)} projects={projects} projectId={mediaProjectId} onProjectChange={setMediaProjectId} />}
+        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} onUseReference={setPreview} onLastFrameChange={() => { lastFrameUploadRef.current = null; firstLastSubmissionRef.current = null; }} availableModels={mediaModels.filter(item => item.outputKind === view)} catalogState={mediaCatalogState} onCatalogRetry={() => setMediaCatalogRevision(value => value + 1)} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} uncertainRequestBlocked={uncertainGenerationMatches(mediaJobs[view], genericSubmissionRef.current[view])} onNewUncertainRequest={() => startNewUncertainGeneration(view)} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} onLogin={() => openLogin("", view)} projects={projects} projectId={mediaProjectId} onProjectChange={setMediaProjectId} />}
         {view === "explore" && <ConnectedExplorePage locale={locale} user={user} onUse={useWorkflow} onLogin={() => openLogin()} />}
         {view === "specialists" && <ConnectedSpecialistsPage locale={locale} onAsk={askSpecialist} />}
       </main>

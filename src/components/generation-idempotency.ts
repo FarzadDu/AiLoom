@@ -24,3 +24,13 @@ export function parsePendingGeneration(value: string | null, identity: string): 
   } catch { /* Invalid storage cannot establish request identity. */ }
   return null;
 }
+
+/** An unknown provider outcome must not become another paid POST for the same input. */
+export function uncertainGenerationMatches(
+  job: { id: string; state: string; errorCode?: string | null } | null | undefined,
+  pending: { identity: string; key: string } | null | undefined,
+  identity?: string
+): boolean {
+  return Boolean(job?.state === "failed" && job.errorCode === "submission_uncertain" &&
+    pending?.key === job.id && (identity === undefined || pending.identity === identity));
+}

@@ -211,6 +211,19 @@ export const chatTextRequest = sqliteTable("chat_text_request", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull()
 }, (table) => [index("chat_text_request_owner_created_idx").on(table.ownerId, table.createdAt, table.id)]);
 
+// Transcription uploads and results remain ephemeral. Only the request key,
+// owner, input fingerprint and outcome are retained to block a second paid POST
+// after a timeout or lost browser response.
+export const transcriptionRequest = sqliteTable("transcription_request", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  inputHash: text("input_hash").notNull(),
+  state: text("state", { enum: ["submitting", "succeeded", "failed", "uncertain"] }).notNull(),
+  errorCode: text("error_code"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull()
+}, (table) => [index("transcription_request_owner_created_idx").on(table.ownerId, table.createdAt, table.id)]);
+
 // A storyboard is private to its owner. Shots also carry ownerId so the
 // composite foreign key prevents attaching a shot to another owner's board.
 export const storyboard = sqliteTable("storyboard", {

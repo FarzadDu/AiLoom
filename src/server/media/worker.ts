@@ -82,10 +82,14 @@ function errorCode(error: unknown): string {
   if (error && typeof error === "object" && "kind" in error && error.kind === "uncertain_submission") {
     return "submission_uncertain";
   }
-  if (error && typeof error === "object" && "status" in error && error.status === 402) {
-    return "provider_credit_required";
+  if (error && typeof error === "object" && "status" in error && typeof error.status === "number") {
+    if (error.status === 402) return "provider_credit_required";
+    if (error.status >= 400 && error.status < 500 && error.status !== 408) return "provider_rejected";
   }
-  return "provider_unavailable";
+  // A transport failure, timeout, 5xx, or malformed success can happen after
+  // the provider accepted a billable task. Keep both the request blocked and
+  // its private repair references available until the outcome is known.
+  return "submission_uncertain";
 }
 
 async function submit(job: ActiveJob, leaseOwner: string, dependencies: WorkerDependencies): Promise<void> {
@@ -99,10 +103,11 @@ async function submit(job: ActiveJob, leaseOwner: string, dependencies: WorkerDe
       state: "running", externalId: accepted.providerQueueReference ?? accepted.providerTaskId, leaseOwner
     });
   } catch (error) {
+    const code = signal.aborted ? "submission_uncertain" : errorCode(error);
     const failed = transitionGenerationJob(job.ownerId, job.id, {
-      state: "failed", errorCode: signal.aborted ? "submission_uncertain" : errorCode(error), leaseOwner
+      state: "failed", errorCode: code, leaseOwner
     });
-    if (failed) await cleanupRepairReferences(job);
+    if (failed && code !== "submission_uncertain") await cleanupRepairReferences(job);
   } finally {
     heartbeat.stop();
   }
@@ -302,8 +307,9 @@ export async function runMediaWorkerCycle(dependencies: WorkerDependencies = {})
     if (job.provider === "local") continue;
     if (job.state === "submitting") {
       // A healthy submitter renews its lease. A dead submitter's paid POST may
-      // have been accepted, so never re-submit it automatically.
-      if (expireStaleSubmittingJob(job.ownerId, job.id)) await cleanupRepairReferences(job);
+      // have been accepted. Keep private repair references for a provider that
+      // may still need to fetch them, and never re-submit automatically.
+      expireStaleSubmittingJob(job.ownerId, job.id);
       continue;
     }
     const running = claimRunningGenerationJob(job.ownerId, job.id, leaseOwner);

@@ -24,6 +24,16 @@ export function selectChoices(children: ReactNode): Choice[] {
   });
 }
 
+export function selectSearchLabel(fieldLabel: string | undefined, locale: "en" | "fa"): string {
+  const name = fieldLabel?.trim().replace(/\s*·\s*\p{Nd}+\s*$/u, "");
+  if (!name) return locale === "fa" ? "جست‌وجوی گزینه‌ها" : "Search options";
+  return locale === "fa" ? `جست‌وجوی ${name}` : `Search ${name}`;
+}
+
+export function selectEmptyMessage(locale: "en" | "fa"): string {
+  return locale === "fa" ? "گزینه‌ای پیدا نشد." : "No matching options.";
+}
+
 type Props = {
   id?: string;
   name?: string;
@@ -45,6 +55,7 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
   const selected = choices[selectedIndex];
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [fieldLabel, setFieldLabel] = useState("");
   const [missingRequired, setMissingRequired] = useState(false);
   const [activeIndex, setActiveIndex] = useState(Math.max(0, selectedIndex));
   const [position, setPosition] = useState({ top: 0, left: 0, width: 200, maxHeight: 300 });
@@ -82,6 +93,7 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
 
   const openMenu = () => {
     if (disabled || !choices.length) return;
+    setFieldLabel(ariaLabel || triggerRef.current?.labels?.[0]?.textContent || "");
     setQuery("");
     setActiveIndex(selectedIndex >= 0 && !choices[selectedIndex].disabled
       ? selectedIndex : Math.max(0, choices.findIndex(choice => !choice.disabled)));
@@ -215,7 +227,8 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
       dir={document.documentElement.dir === "rtl" ? "rtl" : "ltr"}
       style={{ top: position.top, left: position.left, width: position.width, maxHeight: position.maxHeight }}>
       {searchable && <input ref={filterRef} className="ailoom-select-search" type="search"
-        aria-label={document.documentElement.lang === "fa" ? "جست‌وجوی مدل" : "Search models"}
+        aria-label={selectSearchLabel(fieldLabel, document.documentElement.lang === "fa" ? "fa" : "en")}
+        placeholder={selectSearchLabel(fieldLabel, document.documentElement.lang === "fa" ? "fa" : "en")}
         aria-controls={listId} aria-activedescendant={shownChoices.some(item => item.index === activeIndex) ? `${listId}-option-${activeIndex}` : undefined}
         value={query} onChange={event => setQuery(event.target.value)} onKeyDown={onFilterKeyDown} />}
       <div id={listId} role="listbox" aria-labelledby={ariaLabel ? undefined : triggerId} aria-label={ariaLabel}>
@@ -227,7 +240,7 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
         onClick={() => choose(index)}>
         <span>{choice.label}</span>{index === selectedIndex && <Check size={15} aria-hidden="true" />}
       </div>)}
-      {!shownChoices.length && <p className="ailoom-select-empty" role="status">{document.documentElement.lang === "fa" ? "مدلی پیدا نشد." : "No matching models."}</p>}
+      {!shownChoices.length && <p className="ailoom-select-empty" role="status">{selectEmptyMessage(document.documentElement.lang === "fa" ? "fa" : "en")}</p>}
       </div>
     </div>, document.body)}
   </div>;
