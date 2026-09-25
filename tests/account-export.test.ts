@@ -36,6 +36,8 @@ test("account export includes owned content but never other accounts or private 
   chat.appendMessage(bob, bobConversation.id, { role: "user", blocks: [{ type: "text", text: "Bob secret thought" }] });
   const aliceAsset = assets.createAsset(alice, { kind: "image", source: "upload", mimeType: "image/png",
     sizeBytes: 123, storageKey: "uploads/alice-private.png" });
+  const helper = assets.createAsset(alice, { kind: "video", source: "generation", internal: true,
+    mimeType: "video/mp4", sizeBytes: 123, storageKey: `repairs/${randomUUID()}/context-${randomUUID()}.mp4` });
   assets.createAsset(bob, { kind: "image", source: "upload", mimeType: "image/png",
     sizeBytes: 123, storageKey: "uploads/bob-private.png" });
   templates.createExploreTemplate(alice, { title: "Alice workflow", description: "Private draft", category: "Image",
@@ -51,6 +53,7 @@ test("account export includes owned content but never other accounts or private 
   assert.equal(exported.messages.length, 1);
   assert.equal(exported.assets.length, 1);
   assert.equal(exported.assets[0].downloadPath, `/api/assets/${aliceAsset.id}`);
+  assert.equal(exported.assets.some(item => item.id === helper.id), false);
   assert.equal(exported.templates.length, 1);
   assert.equal(exported.jobs[0].prompt, "Blue clouds");
   const serialized = JSON.stringify(exported);

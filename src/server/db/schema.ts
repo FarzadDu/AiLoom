@@ -111,6 +111,7 @@ export const asset = sqliteTable("asset", {
   kind: text("kind", { enum: ["image", "video", "audio", "file"] }).notNull(),
   source: text("source", { enum: ["upload", "generation"] }).notNull(),
   visibility: text("visibility", { enum: ["private", "public"] }).notNull().default("private"),
+  internal: integer("internal", { mode: "boolean" }).notNull().default(false),
   mimeType: text("mimeType").notNull(),
   originalName: text("originalName"),
   sizeBytes: integer("sizeBytes").notNull(),

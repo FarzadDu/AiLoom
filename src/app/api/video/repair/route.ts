@@ -117,13 +117,13 @@ export async function POST(request: Request) {
     const contextKey = relative(root, plan.contextVideoPath).split(sep).join("/");
     const maskKey = relative(root, plan.maskVideoPath).split(sep).join("/");
     const context = createAsset(current.id, {
-      kind: "video", source: "generation", mimeType: "video/mp4",
+      kind: "video", source: "generation", internal: true, mimeType: "video/mp4",
       sizeBytes: (await stat(plan.contextVideoPath)).size, storageKey: contextKey,
       projectId: input.projectId
     });
     createdAssets.push({ id: context.id, storageKey: context.storageKey });
     const mask = createAsset(current.id, {
-      kind: "video", source: "generation", mimeType: "video/mp4",
+      kind: "video", source: "generation", internal: true, mimeType: "video/mp4",
       sizeBytes: (await stat(plan.maskVideoPath)).size, storageKey: maskKey,
       projectId: input.projectId
     });

@@ -241,10 +241,10 @@ function positiveInteger(value: unknown): number | null {
   return parsed !== null && Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-async function probeVideo(
+async function probeMetadata(
   setup: ReturnType<typeof commandSetup>,
   filePath: string
-): Promise<Probe> {
+): Promise<{ streams: Record<string, unknown>[]; format: Record<string, unknown> }> {
   const args = [
     "-v", "error",
     "-show_entries",
@@ -260,10 +260,18 @@ async function probeVideo(
   }
   const info = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   const streams = Array.isArray(info.streams) ? info.streams as Record<string, unknown>[] : [];
-  const video = streams.find(stream => stream.codec_type === "video");
-  if (!video) throw new TemporalRepairError("unsupported_source", "The file has no video stream.");
   const format = info.format && typeof info.format === "object"
     ? info.format as Record<string, unknown> : {};
+  return { streams, format };
+}
+
+async function probeVideo(
+  setup: ReturnType<typeof commandSetup>,
+  filePath: string
+): Promise<Probe> {
+  const { streams, format } = await probeMetadata(setup, filePath);
+  const video = streams.find(stream => stream.codec_type === "video");
+  if (!video) throw new TemporalRepairError("unsupported_source", "The file has no video stream.");
   const rate = parseRate(video.r_frame_rate);
   const averageRate = parseRate(video.avg_frame_rate);
   const width = positiveInteger(video.width);
@@ -301,6 +309,21 @@ async function probeVideo(
     frameCount,
     hasAudio: streams.some(stream => stream.codec_type === "audio")
   };
+}
+
+/** Provider MP4s may use a different frame rate or omit reliable nb_frames. */
+async function probeProviderVideo(setup: ReturnType<typeof commandSetup>, filePath: string) {
+  const { streams, format } = await probeMetadata(setup, filePath);
+  const video = streams.find(stream => stream.codec_type === "video");
+  if (!video) throw new TemporalRepairError("invalid_repair", "The provider returned no video stream.");
+  const width = positiveInteger(video.width);
+  const height = positiveInteger(video.height);
+  const durationSec = positiveNumber(video.duration) ?? positiveNumber(format.duration);
+  if (!width || !height || !durationSec || width * height > MAX_SOURCE_PIXELS ||
+      durationSec > 30) {
+    throw new TemporalRepairError("invalid_repair", "The provider video has invalid dimensions or duration.");
+  }
+  return { width, height, durationSec };
 }
 
 function sameFrameRate(a: Probe, b: Probe): boolean {
@@ -471,15 +494,16 @@ export async function spliceTemporalRepair(
   await preflight(setup);
   const [source, repaired] = await Promise.all([
     probeVideo(setup, sourcePath),
-    probeVideo(setup, repairedContextPath)
+    probeProviderVideo(setup, repairedContextPath)
   ]);
   const plan = input.plan;
+  const contextDurationSec = plan.frameCount / plan.fps;
   if (source.frameCount !== plan.totalFrames ||
       source.width !== plan.width || source.height !== plan.height ||
       !sameFrameRate(source, { ...source, fps: plan.fps }) ||
-      repaired.frameCount !== plan.frameCount || !sameFrameRate(source, repaired) ||
-      Math.abs(repaired.durationSec - plan.frameCount / plan.fps) > Math.max(0.12, 3 / plan.fps) ||
-      Math.abs(repaired.width / repaired.height - plan.width / plan.height) > 0.015) {
+      repaired.durationSec < contextDurationSec * 0.5 ||
+      repaired.durationSec > contextDurationSec * 1.75 ||
+      Math.abs(repaired.width / repaired.height - plan.width / plan.height) > 0.1) {
     throw new TemporalRepairError("invalid_repair",
       "The repaired clip does not match the source timeline.");
   }
@@ -492,8 +516,15 @@ export async function spliceTemporalRepair(
       "," + timebase + ",setsar=1,format=yuv420p[before]");
     labels.push("[before]");
   }
-  segments.push("[1:v:0]fps=fps=" + plan.fpsRatio +
-    ",scale=" + plan.width + ":" + plan.height + ":flags=lanczos" +
+  // Retiming the whole provider clip keeps its masked region at the same
+  // relative position even when the model rounds num_frames or changes FPS.
+  const retime = contextDurationSec / repaired.durationSec;
+  segments.push("[1:v:0]setpts=(PTS-STARTPTS)*" + retime.toFixed(9) +
+    ",fps=fps=" + plan.fpsRatio + ":start_time=0" +
+    ",tpad=stop_mode=clone:stop_duration=" + (2 / plan.fps).toFixed(9) +
+    ",scale=" + plan.width + ":" + plan.height +
+    ":force_original_aspect_ratio=increase:flags=lanczos" +
+    ",crop=" + plan.width + ":" + plan.height +
     ",trim=start_frame=" + plan.targetStartFrameInContext +
     ":end_frame=" + plan.targetEndFrameInContext +
     "," + timebase + ",setsar=1,format=yuv420p[repaired]");

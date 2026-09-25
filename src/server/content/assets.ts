@@ -8,6 +8,7 @@ import { requireOwnedProject } from "./shared";
 const assetInput = z.object({
   kind: z.enum(["image", "video", "audio", "file"]),
   source: z.enum(["upload", "generation"]),
+  internal: z.boolean().optional(),
   mimeType: z.string().trim().min(3).max(200),
   originalName: z.string().trim().min(1).max(255).nullable().optional(),
   sizeBytes: z.number().int().min(0).max(10_000_000_000),
@@ -18,11 +19,13 @@ const assetInput = z.object({
 
 export function createAsset(ownerId: string, input: z.input<typeof assetInput>) {
   const parsed = assetInput.parse(input);
+  if (parsed.internal && parsed.source !== "generation") throw new Error("Only generated assets can be internal.");
   requireOwnedProject(ownerId, parsed.projectId);
   const now = new Date();
   const record = {
     id: randomUUID(), ownerId, projectId: parsed.projectId ?? null,
     kind: parsed.kind, source: parsed.source, visibility: "private" as const,
+    internal: parsed.internal ?? false,
     mimeType: parsed.mimeType, originalName: parsed.originalName ?? null,
     sizeBytes: parsed.sizeBytes, storageKey: parsed.storageKey, createdAt: now, updatedAt: now
   };
@@ -67,7 +70,8 @@ function assetCursor(item: AssetCursor): string {
 export function listAssetsPage(ownerId: string, options: AssetListOptions & { cursor?: AssetCursor | null } = {}) {
   const limit = z.number().int().min(1).max(200).parse(options.limit ?? 100);
   const rows = getDb().select().from(asset)
-    .where(and(eq(asset.ownerId, ownerId), options.kind ? eq(asset.kind, options.kind) : undefined,
+    .where(and(eq(asset.ownerId, ownerId), eq(asset.internal, false),
+      options.kind ? eq(asset.kind, options.kind) : undefined,
       options.source ? eq(asset.source, options.source) : undefined,
       options.cursor ? or(lt(asset.createdAt, options.cursor.createdAt),
         and(eq(asset.createdAt, options.cursor.createdAt), lt(asset.id, options.cursor.id))) : undefined))
@@ -82,7 +86,8 @@ export function listAssets(ownerId: string, options: AssetListOptions = {}) {
 
 export function setAssetVisibility(ownerId: string, assetId: string, visibility: "private" | "public") {
   const validated = z.enum(["private", "public"]).parse(visibility);
-  if (!getOwnedAsset(ownerId, assetId)) return null;
+  const existing = getOwnedAsset(ownerId, assetId);
+  if (!existing || existing.internal) return null;
   getDb().update(asset).set({ visibility: validated, updatedAt: new Date() })
     .where(and(eq(asset.id, assetId), eq(asset.ownerId, ownerId))).run();
   return getOwnedAsset(ownerId, assetId);

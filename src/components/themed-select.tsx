@@ -42,7 +42,7 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
   const choices = selectChoices(children);
   const selectedValue = String(value ?? "");
   const selectedIndex = choices.findIndex(choice => choice.value === selectedValue);
-  const selected = choices[selectedIndex] ?? choices[0];
+  const selected = choices[selectedIndex];
   const [open, setOpen] = useState(false);
   const [missingRequired, setMissingRequired] = useState(false);
   const [activeIndex, setActiveIndex] = useState(Math.max(0, selectedIndex));

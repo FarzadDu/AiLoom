@@ -11,7 +11,7 @@ import { importProviderMedia } from "../storage/provider-import";
 import { getMediaTask, submitMediaRequest } from "./service";
 import { PrivateReferenceError, refreshPrivateAssetUrls } from "./private-references";
 import { renderStoryboardMontage, storyboardRenderJobSchema } from "./storyboard-render";
-import { spliceTemporalRepair, type TemporalRepairPlan } from "./temporal-repair";
+import { spliceTemporalRepair, TemporalRepairError, type TemporalRepairPlan } from "./temporal-repair";
 import { videoToolPaths } from "./binaries";
 
 type ActiveJob = NonNullable<ReturnType<typeof claimNextQueuedJob>>;
@@ -245,9 +245,16 @@ async function pollWithLease(job: ActiveJob, leaseOwner: string,
 
   if (repairInput(job)) {
     try { await completeRepair(job, leaseOwner, task.assets, dependencies); }
-    catch {
+    catch (error) {
+      // Never log provider URLs, prompts or private paths. The stage and typed
+      // media error are enough to diagnose frame/timeline regressions.
+      console.error("Ailoom repair completion failed", {
+        jobId: job.id,
+        code: error instanceof TemporalRepairError ? error.code : "unexpected"
+      });
       const failed = transitionGenerationJob(job.ownerId, job.id, {
-        state: "failed", errorCode: "repair_splice_failed", leaseOwner
+        state: "failed", errorCode: error instanceof TemporalRepairError && error.code === "invalid_repair"
+          ? "repair_provider_output_mismatch" : "repair_splice_failed", leaseOwner
       });
       if (failed) await cleanupRepairReferences(job);
     }

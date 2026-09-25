@@ -78,6 +78,13 @@
       "when": 1790294614129,
       "tag": "0010_chat_text_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1790324375869,
+      "tag": "0011_pale_rawhide_kid",
+      "breakpoints": true
     }
   ]
 }

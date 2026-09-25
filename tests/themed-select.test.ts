@@ -24,3 +24,12 @@ test("themed select parses disabled and numeric options", () => {
   assert.deepEqual(choices.map(choice => [choice.value, choice.searchText, choice.disabled]),
     [["2", "two", false], ["", "choose", true]]);
 });
+
+test("themed select does not display a different option for a stale controlled value", () => {
+  const markup = renderToStaticMarkup(createElement(ThemedSelect, {
+    value: "deleted-asset", onValueChange: () => {},
+    children: createElement("option", { value: "another-asset" }, "Different private video")
+  }));
+  assert.match(markup, /ailoom-select-value">—<\/span>/);
+  assert.doesNotMatch(markup, /Different private video<\/span>/);
+});

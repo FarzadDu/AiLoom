@@ -19,6 +19,7 @@ const projects = await import("../src/server/content/projects");
 const preferences = await import("../src/server/content/preferences");
 const templates = await import("../src/server/content/templates");
 const specialists = await import("../src/server/content/specialists");
+const assetAccess = await import("../src/server/storage/asset-access");
 
 migrate(getDb(), { migrationsFolder: resolve("src/server/db/migrations") });
 const alice = randomUUID();
@@ -112,6 +113,42 @@ test("assets begin private and reject foreign ownership or path traversal", () =
     kind: "file", source: "upload", mimeType: "text/plain", sizeBytes: 4,
     storageKey: "../secret.txt"
   }));
+});
+
+test("repair helper assets remain private and signed-reference capable but never enter the library", () => {
+  const context = assets.createAsset(alice, {
+    kind: "video", source: "generation", internal: true, mimeType: "video/mp4",
+    sizeBytes: 12, storageKey: `repairs/${randomUUID()}/context-${randomUUID()}.mp4`
+  });
+  const final = assets.createAsset(alice, {
+    kind: "video", source: "generation", mimeType: "video/mp4",
+    sizeBytes: 12, storageKey: `repairs/${randomUUID()}/final-${randomUUID()}.mp4`
+  });
+  assert.equal(context.internal, true);
+  assert.equal(context.visibility, "private");
+  assert.equal(assets.getOwnedAsset(alice, context.id)?.id, context.id);
+  assert.equal(assets.getOwnedAsset(bob, context.id), null);
+  assert.equal(assets.getAssetForRead(null, context.id), null);
+  const priorBase = process.env.PUBLIC_BASE_URL;
+  const priorSecret = process.env.BETTER_AUTH_SECRET;
+  process.env.PUBLIC_BASE_URL = "https://ailoom.example.test";
+  process.env.BETTER_AUTH_SECRET = "repair-reference-secret-is-long-enough-to-sign";
+  try {
+    const signed = new URL(assetAccess.signedAssetUrl(context.id).url);
+    assert.equal(assetAccess.verifyAssetAccess(context.id,
+      signed.searchParams.get("expires"), signed.searchParams.get("token")), true);
+  } finally {
+    if (priorBase === undefined) delete process.env.PUBLIC_BASE_URL;
+    else process.env.PUBLIC_BASE_URL = priorBase;
+    if (priorSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
+    else process.env.BETTER_AUTH_SECRET = priorSecret;
+  }
+  assert.equal(assets.setAssetVisibility(alice, context.id, "public"), null);
+  assert.equal(assets.getOwnedAsset(alice, context.id)?.visibility, "private");
+  assert.equal(assets.listAssets(alice, { kind: "video" }).some(item => item.id === context.id), false);
+  assert.equal(assets.listAssets(alice, { kind: "video" }).some(item => item.id === final.id), true);
+  assert.throws(() => assets.createAsset(alice, { kind: "video", source: "upload", internal: true,
+    mimeType: "video/mp4", sizeBytes: 12, storageKey: `uploads/${randomUUID()}.mp4` }));
 });
 
 test("asset cursor pages preserve owner scope and order as newer outputs arrive", () => {

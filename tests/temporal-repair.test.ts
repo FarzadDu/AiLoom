@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { prepareTemporalRepair, spliceTemporalRepair } from "../src/server/media/temporal-repair";
+import { videoToolPaths } from "../src/server/media/binaries";
 
 type CommandCall = { executable: string; args: readonly string[] };
 type ProbeKind = "source" | "context" | "mask" | "repaired" | "output";
@@ -44,6 +46,8 @@ function fixture(options: {
   sourceAudio?: boolean;
   repairedFrames?: number;
   repairedDuration?: number;
+  repairedFps?: string;
+  repairedAverageFps?: string;
   failTool?: "ffmpeg" | "ffprobe";
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "ailoom-temporal-test-"));
@@ -66,7 +70,7 @@ function fixture(options: {
   const repairedProbe = probeVideo(
     options.repairedDuration ?? 3,
     options.repairedFrames ?? 90,
-    { audio: false }
+    { audio: false, fps: options.repairedFps, averageFps: options.repairedAverageFps }
   );
   const outputProbe = probeVideo(sourceDuration, sourceFrames, {
     audio: options.sourceAudio
@@ -240,8 +244,32 @@ test("missing ffprobe or ffmpeg fails explicitly through the injected runner", a
   }
 });
 
-test("splicing rejects a repaired clip whose frame count does not match the context", async () => {
-  const f = fixture({ repairedFrames: 89 });
+test("splicing retimes a provider clip with rounded frames and a different frame rate", async () => {
+  const f = fixture({ repairedFrames: 121, repairedDuration: 121 / 24,
+    repairedFps: "24/1", repairedAverageFps: "25/1" });
+  try {
+    const plan = await prepareTemporalRepair({
+      sourcePath: f.sourcePath, workDir: f.workDir,
+      startSec: 3, endSec: 4, contextSec: 1, prompt: "Repair"
+    }, f.commandOptions);
+    await spliceTemporalRepair({
+      plan, repairedContextPath: f.repairedContextPath, outputPath: f.outputPath
+    }, f.commandOptions);
+    const render = f.calls.find(call => call.executable.includes("ffmpeg") &&
+      call.args.at(-1) === f.outputPath);
+    assert.ok(render);
+    const filter = render.args[render.args.indexOf("-filter_complex") + 1];
+    assert.match(filter, /setpts=\(PTS-STARTPTS\)\*0\.595/);
+    assert.match(filter, /fps=fps=30\/1:start_time=0/);
+    assert.match(filter, /tpad=stop_mode=clone/);
+    assert.match(filter, /trim=start_frame=30:end_frame=60/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("splicing rejects a provider clip far outside the requested context duration", async () => {
+  const f = fixture({ repairedFrames: 180, repairedDuration: 6 });
   try {
     const plan = await prepareTemporalRepair({
       sourcePath: f.sourcePath, workDir: f.workDir,
@@ -249,12 +277,44 @@ test("splicing rejects a repaired clip whose frame count does not match the cont
     }, f.commandOptions);
     await assert.rejects(spliceTemporalRepair({
       plan, repairedContextPath: f.repairedContextPath, outputPath: f.outputPath
-    }, f.commandOptions));
-    assert.equal(f.calls.some(call =>
-      call.executable.includes("ffmpeg") && call.args.at(-1) === f.outputPath
-    ), false);
+    }, f.commandOptions), { code: "invalid_repair" });
+    assert.equal(f.calls.some(call => call.executable.includes("ffmpeg") &&
+      call.args.at(-1) === f.outputPath), false);
   } finally {
     f.cleanup();
+  }
+});
+
+test("real FFmpeg splice preserves source frames and audio after provider retiming", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ailoom-temporal-ffmpeg-"));
+  const sourcePath = join(directory, "source.mp4");
+  const repairedContextPath = join(directory, "provider.mp4");
+  const outputPath = join(directory, "final.mp4");
+  const paths = videoToolPaths();
+  const run = (executable: string, args: string[]) => new Promise<void>((resolve, reject) => {
+    const child = spawn(executable, args, { windowsHide: true });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString().slice(0, 500); });
+    child.once("error", reject);
+    child.once("close", code => code === 0 ? resolve() : reject(new Error(`Media command failed: ${stderr}`)));
+  });
+  try {
+    await run(paths.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y",
+      "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24",
+      "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+      "-t", "4", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", sourcePath]);
+    await run(paths.ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y",
+      "-f", "lavfi", "-i", "testsrc2=size=426x240:rate=25",
+      "-t", "3", "-c:v", "libx264", "-preset", "ultrafast", repairedContextPath]);
+    const plan = await prepareTemporalRepair({
+      sourcePath, workDir: join(directory, "work"), startSec: 1,
+      endSec: 2, contextSec: 0.5, prompt: "Replace the marked second"
+    }, paths);
+    const result = await spliceTemporalRepair({ plan, repairedContextPath, outputPath }, paths);
+    assert.equal(result.audioPreserved, true);
+    assert.equal(result.durationSec, 4);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

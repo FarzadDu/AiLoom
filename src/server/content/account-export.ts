@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   asset, conversation, exploreTemplate, generationJob, message, project, user, userPreference
@@ -46,7 +46,8 @@ export function accountExport(userId: string) {
     id: asset.id, projectId: asset.projectId, kind: asset.kind, source: asset.source,
     visibility: asset.visibility, mimeType: asset.mimeType, originalName: asset.originalName,
     sizeBytes: asset.sizeBytes, createdAt: asset.createdAt, updatedAt: asset.updatedAt
-  }).from(asset).where(eq(asset.ownerId, userId)).orderBy(asc(asset.createdAt)).all()
+  }).from(asset).where(and(eq(asset.ownerId, userId), eq(asset.internal, false)))
+    .orderBy(asc(asset.createdAt)).all()
     .map(row => ({ ...row, downloadPath: `/api/assets/${row.id}` }));
   const jobs = db.select({
     id: generationJob.id, projectId: generationJob.projectId, kind: generationJob.kind,
