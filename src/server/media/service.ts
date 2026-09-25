@@ -104,9 +104,15 @@ const seedanceControls = {
 };
 
 const kieImageSchema = z.strictObject({
-  modelId: z.literal("nano-banana-2"),
+  modelId: z.enum(["nano-banana-2", "nano-banana-pro"]),
   operation: z.literal("text_to_image"),
   prompt
+});
+const kieImagenSchema = z.strictObject({
+  modelId: z.enum(["google/imagen4", "google/imagen4-fast", "google/imagen4-ultra"]),
+  operation: z.literal("text_to_image"),
+  prompt,
+  aspectRatio: z.enum(["1:1", "16:9", "9:16"]).optional()
 });
 const waveImageSchema = z.strictObject({
   modelId: z.literal("wavespeed-ai/z-image/turbo"),
@@ -118,12 +124,44 @@ const waveImageSchema = z.strictObject({
 }).refine(value => (value.width === undefined) === (value.height === undefined), {
   path: ["width"], message: "Width and height must be supplied together."
 });
+const waveFluxFlashSchema = z.strictObject({
+  modelId: z.literal("wavespeed-ai/flux-2-flash/text-to-image"),
+  operation: z.literal("text_to_image"),
+  prompt,
+  width: z.number().int().min(512).max(2048).optional(),
+  height: z.number().int().min(512).max(2048).optional()
+}).refine(value => (value.width === undefined) === (value.height === undefined), {
+  path: ["width"], message: "Width and height must be supplied together."
+});
 const fluxImageSchema = z.strictObject({
   modelId: z.literal("fal-ai/flux-2-pro"),
   operation: z.literal("text_to_image"),
   prompt,
   imageSize: imageSize.optional(),
   outputFormat: imageFormat.optional()
+});
+const falImageTextSchema = z.strictObject({
+  modelId: z.enum([
+    "bytedance/seedream/v5/flash/text-to-image",
+    "bytedance/seedream/v5/lite/text-to-image",
+    "fal-ai/bytedance/seedream/v4.5/text-to-image",
+    "fal-ai/flux-2-flex", "fal-ai/flux-2/flash",
+    "alibaba/qwen-image-3/text-to-image", "fal-ai/qwen-image-2512",
+    "ideogram/v4", "fal-ai/recraft/v3/text-to-image"
+  ]),
+  operation: z.literal("text_to_image"),
+  prompt,
+  imageSize: imageSize.optional()
+});
+const gptImageTextSchema = z.strictObject({
+  modelId: z.enum([
+    "openai/gpt-image-2.5/flare/text-to-image",
+    "openai/gpt-image-2.5/sunburst/text-to-image"
+  ]),
+  operation: z.literal("text_to_image"),
+  prompt,
+  imageSize: imageSize.optional(),
+  quality: z.enum(["low", "medium", "high"]).optional()
 });
 const qwenEditSchema = z.strictObject({
   modelId: z.literal("fal-ai/qwen-image-edit"),
@@ -132,6 +170,29 @@ const qwenEditSchema = z.strictObject({
   imageUrl: safeUrl,
   imageSize: imageSize.optional(),
   outputFormat: imageFormat.optional()
+});
+const falImageEditSchema = z.strictObject({
+  modelId: z.enum([
+    "bytedance/seedream/v5/flash/edit",
+    "bytedance/seedream/v5/lite/edit",
+    "fal-ai/bytedance/seedream/v4.5/edit",
+    "fal-ai/flux-2-pro/edit", "alibaba/qwen-image-3/edit"
+  ]),
+  operation: z.literal("image_edit"),
+  prompt,
+  imageUrl: safeUrl,
+  imageSize: imageSize.optional()
+});
+const gptImageEditSchema = z.strictObject({
+  modelId: z.enum([
+    "openai/gpt-image-2.5/flare/edit",
+    "openai/gpt-image-2.5/sunburst/edit"
+  ]),
+  operation: z.literal("image_edit"),
+  prompt,
+  imageUrl: safeUrl,
+  imageSize: imageSize.optional(),
+  quality: z.enum(["low", "medium", "high"]).optional()
 });
 const waveInpaintSchema = z.strictObject({
   modelId: z.literal("wavespeed-ai/z-image/turbo-inpaint"),
@@ -166,6 +227,38 @@ const veoTextSchema = z.strictObject({
   durationSec: veoDuration.optional(),
   aspectRatio: veoAspect.optional(),
   resolution: veoResolution.optional(),
+  audio: z.boolean().optional()
+});
+const kieKlingVideoControls = {
+  prompt,
+  durationSec: z.number().int().min(3).max(15).optional(),
+  aspectRatio: z.enum(["16:9", "9:16", "1:1"]).optional(),
+  audio: z.boolean().optional(),
+  mode: z.enum(["std", "pro", "4K"]).optional()
+};
+const kieKlingTextSchema = z.strictObject({
+  modelId: z.literal("kling-3.0/video"),
+  operation: z.literal("text_to_video"),
+  ...kieKlingVideoControls
+});
+const kieKlingImageSchema = z.strictObject({
+  modelId: z.literal("kling-3.0/video"),
+  operation: z.literal("image_to_video"),
+  ...kieKlingVideoControls,
+  imageUrl: safeUrl
+});
+const kieSeedanceTextSchema = z.strictObject({
+  modelId: z.literal("bytedance/seedance-2-5"),
+  operation: z.literal("text_to_video"),
+  prompt
+});
+const veoStandardTextSchema = z.strictObject({
+  modelId: z.literal("fal-ai/veo3.1"),
+  operation: z.literal("text_to_video"),
+  prompt,
+  durationSec: veoDuration.optional(),
+  aspectRatio: veoAspect.optional(),
+  resolution: z.enum(["720p", "1080p", "4k"]).optional(),
   audio: z.boolean().optional()
 });
 const veoImageSchema = z.strictObject({
@@ -214,6 +307,98 @@ const seedanceReferenceSchema = z.strictObject({
       message: "The combined reference limit is 50 files." });
   }
 });
+const klingDuration = z.number().int().min(3).max(15);
+const klingTextSchema = z.strictObject({
+  modelId: z.literal("fal-ai/kling-video/v3/standard/text-to-video"),
+  operation: z.literal("text_to_video"),
+  prompt,
+  durationSec: klingDuration.optional(),
+  aspectRatio: z.enum(["16:9", "9:16", "1:1"]).optional(),
+  audio: z.boolean().optional()
+});
+const klingTurboTextSchema = z.strictObject({
+  modelId: z.literal("fal-ai/kling-video/v3/turbo/standard/text-to-video"),
+  operation: z.literal("text_to_video"),
+  prompt: prompt.max(2500),
+  durationSec: klingDuration.optional(),
+  aspectRatio: z.enum(["16:9", "9:16", "1:1"]).optional()
+});
+const klingImageSchema = z.strictObject({
+  modelId: z.literal("fal-ai/kling-video/v3/standard/image-to-video"),
+  operation: z.literal("image_to_video"),
+  prompt,
+  imageUrl: safeUrl,
+  durationSec: klingDuration.optional(),
+  audio: z.boolean().optional()
+});
+const wanDuration = z.number().int().min(2).max(15);
+const wanAspect = z.enum(["16:9", "9:16", "1:1", "4:3", "3:4"]);
+const wanResolution = z.enum(["720p", "1080p"]);
+const wanTextSchema = z.strictObject({
+  modelId: z.literal("fal-ai/wan/v2.7/text-to-video"),
+  operation: z.literal("text_to_video"),
+  prompt,
+  durationSec: wanDuration.optional(),
+  aspectRatio: wanAspect.optional(),
+  resolution: wanResolution.optional()
+});
+const hailuoDuration = z.union([z.literal(6), z.literal(10)]);
+const hailuoTextSchema = z.strictObject({
+  modelId: z.literal("fal-ai/minimax/hailuo-2.3/standard/text-to-video"),
+  operation: z.literal("text_to_video"),
+  prompt,
+  durationSec: hailuoDuration.optional(),
+  promptOptimizer: z.boolean().optional()
+});
+const hailuoImageSchema = z.strictObject({
+  modelId: z.literal("fal-ai/minimax/hailuo-2.3/standard/image-to-video"),
+  operation: z.literal("image_to_video"),
+  prompt,
+  imageUrl: safeUrl,
+  durationSec: hailuoDuration.optional(),
+  promptOptimizer: z.boolean().optional()
+});
+const lumaRayFlashSchema = z.strictObject({
+  modelId: z.literal("fal-ai/luma-dream-machine/ray-2-flash"),
+  operation: z.literal("text_to_video"),
+  prompt,
+  durationSec: z.union([z.literal(5), z.literal(9)]).optional(),
+  aspectRatio: z.enum(["16:9", "9:16", "4:3", "3:4", "21:9", "9:21"]).optional(),
+  resolution: z.enum(["540p", "720p", "1080p"]).optional(),
+  loop: z.boolean().optional()
+});
+const wanImageSchema = z.strictObject({
+  modelId: z.literal("fal-ai/wan/v2.7/image-to-video"),
+  operation: z.literal("image_to_video"),
+  prompt,
+  imageUrl: safeUrl,
+  durationSec: wanDuration.optional(),
+  resolution: wanResolution.optional()
+});
+const wanReferenceSchema = z.strictObject({
+  modelId: z.literal("fal-ai/wan/v2.7/reference-to-video"),
+  operation: z.literal("reference_to_video"),
+  prompt,
+  imageUrls: z.array(safeUrl).max(10).optional(),
+  videoUrls: z.array(safeUrl).max(5).optional(),
+  durationSec: z.number().int().min(2).max(10).optional(),
+  aspectRatio: wanAspect.optional(),
+  resolution: wanResolution.optional()
+}).superRefine((value, context) => {
+  if (!(value.imageUrls?.length || value.videoUrls?.length)) {
+    context.addIssue({ code: "custom", path: ["imageUrls"],
+      message: "At least one image or video reference is required." });
+  }
+});
+const waveOpenVideoSchema = z.strictObject({
+  modelId: z.literal("wavespeed-ai/open-video/image-to-video"),
+  operation: z.literal("image_to_video"),
+  prompt,
+  imageUrl: safeUrl,
+  durationSec: z.number().int().min(3).max(20).optional(),
+  resolution: z.enum(["480p", "720p", "1080p"]).optional(),
+  preset: z.enum(["tuned", "original"]).optional()
+});
 const temporalInpaintSchema = z.strictObject({
   modelId: z.literal("fal-ai/ltx-2.3-quality/inpaint"),
   operation: z.literal("temporal_inpaint"),
@@ -230,8 +415,36 @@ const speechSchema = z.strictObject({
   voice: z.string().trim().min(1).max(128).optional(),
   languageCode: z.enum(["en", "fa"]).optional()
 });
+const elevenLegacySpeechSchema = z.strictObject({
+  modelId: z.enum(["fal-ai/elevenlabs/tts/turbo-v2.5", "fal-ai/elevenlabs/tts/multilingual-v2"]),
+  operation: z.literal("text_to_speech"),
+  text: speechText,
+  voice: z.string().trim().min(1).max(128).optional(),
+  languageCode: z.enum(["en", "fa"]).optional()
+});
+const geminiVoice = z.enum([
+  "Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede", "Autonoe", "Callirrhoe",
+  "Charon", "Despina", "Enceladus", "Erinome", "Fenrir", "Gacrux", "Iapetus", "Kore",
+  "Laomedeia", "Leda", "Orus", "Pulcherrima", "Puck", "Rasalgethi", "Sadachbia", "Sadaltager",
+  "Schedar", "Sulafat", "Umbriel", "Vindemiatrix", "Zephyr", "Zubenelgenubi"
+]);
+const geminiSpeechSchema = z.strictObject({
+  modelId: z.literal("fal-ai/gemini-tts"),
+  operation: z.literal("text_to_speech"),
+  text: speechText,
+  voice: geminiVoice.optional(),
+  languageCode: z.enum(["en", "fa"]).optional(),
+  modelVariant: z.enum(["gemini-2.5-flash-tts", "gemini-2.5-pro-tts"]).optional()
+});
+const minimaxSpeechSchema = z.strictObject({
+  modelId: z.literal("minimax/speech-2.8-hd"),
+  operation: z.literal("text_to_speech"),
+  text: speechText,
+  voice: z.string().trim().min(1).max(128).optional(),
+  languageCode: z.enum(["en", "fa"]).optional()
+});
 const elevenMusicSchema = z.strictObject({
-  modelId: z.literal("elevenlabs/music/v2"),
+  modelId: z.enum(["elevenlabs/music/v2", "elevenlabs/music/v2.5"]),
   operation: z.literal("text_to_music"),
   prompt,
   durationSec: z.number().int().min(3).max(600).optional(),
@@ -243,6 +456,12 @@ const stableMusicSchema = z.strictObject({
   prompt,
   durationSec: z.number().int().min(3).max(120).optional()
 });
+const stableMediumMusicSchema = z.strictObject({
+  modelId: z.literal("fal-ai/stable-audio-3/medium/text-to-audio"),
+  operation: z.literal("text_to_music"),
+  prompt,
+  durationSec: z.number().int().min(3).max(380).optional()
+});
 const soundEffectSchema = z.strictObject({
   modelId: z.literal("fal-ai/stable-audio-3/small/sfx/text-to-audio"),
   operation: z.literal("text_to_sound_effect"),
@@ -251,6 +470,15 @@ const soundEffectSchema = z.strictObject({
   negativePrompt: z.string().trim().max(1000).optional(),
   outputFormat: z.enum(["mp3", "wav"]).optional(),
   seed: z.number().int().min(0).max(2_147_483_647).optional()
+});
+const elevenSoundEffectSchema = z.strictObject({
+  modelId: z.literal("fal-ai/elevenlabs/sound-effects/v2"),
+  operation: z.literal("text_to_sound_effect"),
+  prompt,
+  durationSec: z.number().min(0.5).max(22).optional(),
+  outputFormat: z.literal("mp3").optional(),
+  loop: z.boolean().optional(),
+  promptInfluence: z.number().min(0).max(1).optional()
 });
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -280,7 +508,7 @@ function veoInput(value: {
   prompt: string;
   durationSec?: 4 | 6 | 8;
   aspectRatio?: "auto" | "16:9" | "9:16";
-  resolution?: "720p" | "1080p";
+  resolution?: "720p" | "1080p" | "4k";
   audio?: boolean;
 }): Record<string, unknown> {
   return {
@@ -329,7 +557,7 @@ function seedanceEstimate(value: SeedanceControls, hasVideoReference = false): M
     "Fal Seedance 2.5 published output-pixel token formula (fixed duration and aspect); audio does not change token price");
 }
 
-function assertSupported(value: unknown): MediaModel {
+function assertSupported(value: unknown): { model: MediaModel; operation: MediaOperation } {
   const input = record(value);
   if (!input || typeof input.modelId !== "string") {
     throw new MediaRequestError("invalid_input", ["modelId"]);
@@ -340,15 +568,38 @@ function assertSupported(value: unknown): MediaModel {
       !model.operations.includes(input.operation as MediaOperation)) {
     throw new MediaRequestError("unsupported_operation", ["operation"]);
   }
-  return model;
+  return { model, operation: input.operation as MediaOperation };
 }
 
 export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
-  const model = assertSupported(input);
+  const { model, operation } = assertSupported(input);
   let providerInput: Record<string, unknown>;
   let estimate: MediaPriceEstimate | null = null;
   switch (model.id) {
-    case "nano-banana-2": {
+    case "bytedance/seedance-2-5": {
+      const value = checked(kieSeedanceTextSchema, input);
+      providerInput = { prompt: value.prompt };
+      break;
+    }
+    case "kling-3.0/video": {
+      const value = operation === "image_to_video"
+        ? checked(kieKlingImageSchema, input)
+        : checked(kieKlingTextSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        ...("imageUrl" in value ? { image_urls: [value.imageUrl] } : {}),
+        duration: String(value.durationSec ?? 5),
+        ...("imageUrl" in value && value.aspectRatio === undefined
+          ? {} : { aspect_ratio: value.aspectRatio ?? "16:9" }),
+        ...(value.audio === undefined ? {} : { sound: value.audio }),
+        ...(value.mode === undefined ? {} : { mode: value.mode }),
+        multi_shots: false
+      };
+      // The docs give duration/mode choices but no reliable credit formula.
+      break;
+    }
+    case "nano-banana-2":
+    case "nano-banana-pro": {
       const value = checked(kieImageSchema, input);
       providerInput = {
         prompt: value.prompt,
@@ -359,12 +610,31 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
       };
       break;
     }
+    case "google/imagen4":
+    case "google/imagen4-fast":
+    case "google/imagen4-ultra": {
+      const value = checked(kieImagenSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        negative_prompt: "",
+        aspect_ratio: value.aspectRatio ?? "1:1"
+      };
+      break;
+    }
     case "wavespeed-ai/z-image/turbo": {
       const value = checked(waveImageSchema, input);
       providerInput = {
         prompt: value.prompt,
         size: String(value.width ?? 1024) + "*" + String(value.height ?? 1024),
         output_format: value.outputFormat ?? "jpeg"
+      };
+      break;
+    }
+    case "wavespeed-ai/flux-2-flash/text-to-image": {
+      const value = checked(waveFluxFlashSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        size: String(value.width ?? 1024) + "*" + String(value.height ?? 1024)
       };
       break;
     }
@@ -378,6 +648,41 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
       };
       break;
     }
+    case "openai/gpt-image-2.5/flare/text-to-image":
+    case "openai/gpt-image-2.5/sunburst/text-to-image": {
+      const value = checked(gptImageTextSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        image_size: value.imageSize ?? "landscape_4_3",
+        quality: value.quality ?? "high",
+        num_images: 1,
+        output_format: "png"
+      };
+      break;
+    }
+    case "bytedance/seedream/v5/flash/text-to-image":
+    case "bytedance/seedream/v5/lite/text-to-image":
+    case "fal-ai/bytedance/seedream/v4.5/text-to-image":
+    case "fal-ai/flux-2-flex":
+    case "fal-ai/flux-2/flash":
+    case "alibaba/qwen-image-3/text-to-image":
+    case "fal-ai/qwen-image-2512":
+    case "ideogram/v4":
+    case "fal-ai/recraft/v3/text-to-image": {
+      const value = checked(falImageTextSchema, input);
+      const seedream = value.modelId.includes("seedream");
+      providerInput = {
+        prompt: value.prompt,
+        image_size: value.imageSize ?? (seedream ? "auto_2K" : value.modelId === "ideogram/v4" || value.modelId.includes("recraft") ? "square_hd" : "landscape_4_3"),
+        ...(value.modelId === "fal-ai/flux-2-flex" || value.modelId === "fal-ai/recraft/v3/text-to-image" ? {} : { num_images: 1 }),
+        ...(value.modelId === "ideogram/v4" ? { output_format: "jpeg" } : {}),
+        ...(value.modelId === "fal-ai/flux-2-flex" || value.modelId === "fal-ai/flux-2/flash" ? { output_format: "jpeg" } : {}),
+        ...(value.modelId === "alibaba/qwen-image-3/text-to-image" || value.modelId === "fal-ai/qwen-image-2512" ? { output_format: "png" } : {}),
+        ...(value.modelId === "bytedance/seedream/v5/flash/text-to-image" ? { output_format: "jpeg" } : {}),
+        enable_safety_checker: true
+      };
+      break;
+    }
     case "fal-ai/qwen-image-edit": {
       const value = checked(qwenEditSchema, input);
       providerInput = {
@@ -386,6 +691,38 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
         ...(value.imageSize ? { image_size: value.imageSize } : {}),
         output_format: value.outputFormat ?? "png",
         num_images: 1,
+        enable_safety_checker: true
+      };
+      break;
+    }
+    case "openai/gpt-image-2.5/flare/edit":
+    case "openai/gpt-image-2.5/sunburst/edit": {
+      const value = checked(gptImageEditSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        image_urls: [value.imageUrl],
+        image_size: value.imageSize ?? "auto",
+        quality: value.quality ?? "high",
+        num_images: 1,
+        output_format: "png"
+      };
+      break;
+    }
+    case "bytedance/seedream/v5/flash/edit":
+    case "bytedance/seedream/v5/lite/edit":
+    case "fal-ai/bytedance/seedream/v4.5/edit":
+    case "fal-ai/flux-2-pro/edit":
+    case "alibaba/qwen-image-3/edit": {
+      const value = checked(falImageEditSchema, input);
+      const seedream = value.modelId.includes("seedream");
+      providerInput = {
+        prompt: value.prompt,
+        image_urls: [value.imageUrl],
+        ...(value.imageSize ? { image_size: value.imageSize } : value.modelId === "alibaba/qwen-image-3/edit" ? {} : { image_size: seedream ? "auto_2K" : "auto" }),
+        ...(value.modelId === "fal-ai/flux-2-pro/edit" ? {} : { num_images: 1 }),
+        ...(value.modelId === "fal-ai/flux-2-pro/edit" ? { output_format: "jpeg" } : {}),
+        ...(value.modelId === "alibaba/qwen-image-3/edit" ? { output_format: "png" } : {}),
+        ...(value.modelId === "bytedance/seedream/v5/flash/edit" ? { output_format: "jpeg" } : {}),
         enable_safety_checker: true
       };
       break;
@@ -429,6 +766,16 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
         "fal Veo 3.1 Fast, 720p/1080p, generated video seconds");
       break;
     }
+    case "fal-ai/veo3.1": {
+      const value = checked(veoStandardTextSchema, input);
+      providerInput = veoInput(value);
+      const rate = value.resolution === "4k"
+        ? (value.audio === false ? 0.40 : 0.60)
+        : (value.audio === false ? 0.20 : 0.40);
+      estimate = priceEstimate((value.durationSec ?? 8) * rate,
+        "fal Veo 3.1 Standard text-to-video, generated seconds at selected resolution/audio");
+      break;
+    }
     case "fal-ai/veo3.1/fast/image-to-video": {
       const value = checked(veoImageSchema, input);
       providerInput = {
@@ -470,6 +817,139 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
       estimate = seedanceEstimate(value, !!value.videoUrls?.length);
       break;
     }
+    case "fal-ai/kling-video/v3/standard/text-to-video": {
+      const value = checked(klingTextSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        duration: String(value.durationSec ?? 5),
+        aspect_ratio: value.aspectRatio ?? "16:9",
+        generate_audio: value.audio ?? true
+      };
+      estimate = priceEstimate((value.durationSec ?? 5) * (value.audio === false ? 0.084 : 0.126),
+        "fal Kling 3.0 Standard text-to-video, generated seconds without voice controls");
+      break;
+    }
+    case "fal-ai/kling-video/v3/turbo/standard/text-to-video": {
+      const value = checked(klingTurboTextSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        duration: String(value.durationSec ?? 5),
+        aspect_ratio: value.aspectRatio ?? "16:9"
+      };
+      estimate = priceEstimate((value.durationSec ?? 5) * 0.112,
+        "fal Kling 3.0 Turbo Standard text-to-video at 720p, generated seconds");
+      break;
+    }
+    case "fal-ai/kling-video/v3/standard/image-to-video": {
+      const value = checked(klingImageSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        start_image_url: value.imageUrl,
+        duration: String(value.durationSec ?? 5),
+        generate_audio: value.audio ?? true
+      };
+      estimate = priceEstimate((value.durationSec ?? 5) * (value.audio === false ? 0.084 : 0.126),
+        "fal Kling 3.0 Standard image-to-video, generated seconds without voice controls");
+      break;
+    }
+    case "fal-ai/wan/v2.7/text-to-video": {
+      const value = checked(wanTextSchema, input);
+      const resolution = value.resolution ?? "720p";
+      providerInput = {
+        prompt: value.prompt,
+        duration: value.durationSec ?? 5,
+        aspect_ratio: value.aspectRatio ?? "16:9",
+        resolution,
+        enable_safety_checker: true
+      };
+      estimate = priceEstimate((value.durationSec ?? 5) * (resolution === "720p" ? 0.10 : 0.15),
+        "fal Wan 2.7 text-to-video, generated seconds at selected resolution");
+      break;
+    }
+    case "fal-ai/minimax/hailuo-2.3/standard/text-to-video": {
+      const value = checked(hailuoTextSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        prompt_optimizer: value.promptOptimizer ?? true,
+        duration: String(value.durationSec ?? 6)
+      };
+      estimate = priceEstimate((value.durationSec ?? 6) === 6 ? 0.28 : 0.56,
+        "fal MiniMax Hailuo 2.3 Standard text-to-video, fixed 768p clip price");
+      break;
+    }
+    case "fal-ai/minimax/hailuo-2.3/standard/image-to-video": {
+      const value = checked(hailuoImageSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        image_url: value.imageUrl,
+        prompt_optimizer: value.promptOptimizer ?? true,
+        duration: String(value.durationSec ?? 6)
+      };
+      estimate = priceEstimate((value.durationSec ?? 6) === 6 ? 0.28 : 0.56,
+        "fal MiniMax Hailuo 2.3 Standard image-to-video, fixed 768p clip price");
+      break;
+    }
+    case "fal-ai/luma-dream-machine/ray-2-flash": {
+      const value = checked(lumaRayFlashSchema, input);
+      const resolution = value.resolution ?? "540p";
+      providerInput = {
+        prompt: value.prompt,
+        aspect_ratio: value.aspectRatio ?? "16:9",
+        resolution,
+        duration: `${value.durationSec ?? 5}s`,
+        ...(value.loop === undefined ? {} : { loop: value.loop })
+      };
+      estimate = priceEstimate(0.20 * ((value.durationSec ?? 5) === 9 ? 2 : 1) *
+        (resolution === "540p" ? 1 : resolution === "720p" ? 2 : 4),
+      "fal Luma Ray 2 Flash, published 5s/540p base price and documented duration/resolution multipliers");
+      break;
+    }
+    case "fal-ai/wan/v2.7/image-to-video": {
+      const value = checked(wanImageSchema, input);
+      const resolution = value.resolution ?? "720p";
+      providerInput = {
+        prompt: value.prompt,
+        image_url: value.imageUrl,
+        duration: value.durationSec ?? 5,
+        resolution,
+        enable_safety_checker: true
+      };
+      estimate = priceEstimate((value.durationSec ?? 5) * (resolution === "720p" ? 0.10 : 0.15),
+        "fal Wan 2.7 image-to-video, generated seconds at selected resolution");
+      break;
+    }
+    case "fal-ai/wan/v2.7/reference-to-video": {
+      const value = checked(wanReferenceSchema, input);
+      const resolution = value.resolution ?? "720p";
+      providerInput = {
+        prompt: value.prompt,
+        ...(value.imageUrls?.length ? { reference_image_urls: value.imageUrls } : {}),
+        ...(value.videoUrls?.length ? { reference_video_urls: value.videoUrls } : {}),
+        duration: value.durationSec ?? 5,
+        aspect_ratio: value.aspectRatio ?? "16:9",
+        resolution,
+        enable_safety_checker: true
+      };
+      // Input-video duration is unknown from signed URLs and is billed too.
+      estimate = value.videoUrls?.length ? null : priceEstimate((value.durationSec ?? 5) * 0.10,
+        "fal Wan 2.7 reference-to-video with image references only, generated seconds");
+      break;
+    }
+    case "wavespeed-ai/open-video/image-to-video": {
+      const value = checked(waveOpenVideoSchema, input);
+      const resolution = value.resolution ?? "480p";
+      providerInput = {
+        image: value.imageUrl,
+        prompt: value.prompt,
+        preset: value.preset ?? "tuned",
+        resolution,
+        duration: value.durationSec ?? 5
+      };
+      estimate = priceEstimate((value.durationSec ?? 5) * (
+        resolution === "480p" ? 0.02 : resolution === "720p" ? 0.04 : 0.06),
+      "WaveSpeed OpenVideo image-to-video, generated seconds with native audio");
+      break;
+    }
     case "fal-ai/ltx-2.3-quality/inpaint": {
       const value = checked(temporalInpaintSchema, input);
       providerInput = {
@@ -495,17 +975,58 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
         "fal Eleven v3, requested text characters");
       break;
     }
-    case "elevenlabs/music/v2": {
+    case "fal-ai/elevenlabs/tts/turbo-v2.5":
+    case "fal-ai/elevenlabs/tts/multilingual-v2": {
+      const value = checked(elevenLegacySpeechSchema, input);
+      providerInput = {
+        text: value.text,
+        ...(value.voice ? { voice: value.voice } : {}),
+        // Neither model officially lists Persian. Let Persian text run without
+        // forcing an unsupported language code at the provider.
+        ...(value.languageCode === "en" ? { language_code: "en" } : {}),
+        apply_text_normalization: "auto"
+      };
+      const rate = model.id.endsWith("turbo-v2.5") ? 0.05 : 0.10;
+      estimate = priceEstimate(value.text.length * rate / 1000,
+        `fal ${model.name}, requested text characters`);
+      break;
+    }
+    case "fal-ai/gemini-tts": {
+      const value = checked(geminiSpeechSchema, input);
+      providerInput = {
+        prompt: value.text,
+        voice: value.voice ?? "Kore",
+        model: value.modelVariant ?? "gemini-2.5-flash-tts",
+        ...(value.languageCode ? { language_code: value.languageCode === "fa"
+          ? "Persian (Iran)" : "English (US)" } : {}),
+        output_format: "mp3"
+      };
+      break;
+    }
+    case "minimax/speech-2.8-hd": {
+      const value = checked(minimaxSpeechSchema, input);
+      providerInput = {
+        text: value.text,
+        voice_id: value.voice ?? "Friendly_Person",
+        ...(value.languageCode ? { language_boost: value.languageCode === "fa" ? "Persian" : "English" } : {}),
+        format: "mp3"
+      };
+      estimate = priceEstimate(value.text.length * 0.10 / 1000,
+        "WaveSpeed MiniMax Speech 2.8 HD, requested text characters");
+      break;
+    }
+    case "elevenlabs/music/v2":
+    case "elevenlabs/music/v2.5": {
       const value = checked(elevenMusicSchema, input);
       const durationSec = value.durationSec ?? 30;
       providerInput = {
         prompt: value.prompt,
         music_length_ms: durationSec * 1000,
         force_instrumental: value.forceInstrumental ?? false,
-        output_format: "mp3_48000_192"
+        output_format: model.id === "elevenlabs/music/v2.5" ? "mp3_44100_128" : "mp3_48000_192"
       };
       estimate = priceEstimate(Math.ceil(durationSec / 60) * 0.60,
-        "fal ElevenLabs Music v2, started output minutes");
+        `fal ${model.name}, started output minutes`);
       break;
     }
     case "fal-ai/stable-audio-3/small/music/text-to-audio": {
@@ -517,6 +1038,16 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
         bitrate: "192k"
       };
       // The playground shows a sample request price, not a duration formula.
+      break;
+    }
+    case "fal-ai/stable-audio-3/medium/text-to-audio": {
+      const value = checked(stableMediumMusicSchema, input);
+      providerInput = {
+        prompt: value.prompt,
+        duration: value.durationSec ?? 30,
+        output_format: "mp3",
+        bitrate: "192k"
+      };
       break;
     }
     case "fal-ai/stable-audio-3/small/sfx/text-to-audio": {
@@ -532,13 +1063,26 @@ export function prepareMediaRequest(input: unknown): PreparedMediaRequest {
       // Fal shows only a sample request price, not a per-duration cost formula.
       break;
     }
+    case "fal-ai/elevenlabs/sound-effects/v2": {
+      const value = checked(elevenSoundEffectSchema, input);
+      providerInput = {
+        text: value.prompt,
+        ...(value.durationSec === undefined ? {} : { duration_seconds: value.durationSec }),
+        ...(value.promptInfluence === undefined ? {} : { prompt_influence: value.promptInfluence }),
+        ...(value.loop === undefined ? {} : { loop: value.loop }),
+        output_format: "mp3_44100_128"
+      };
+      if (value.durationSec !== undefined) estimate = priceEstimate(value.durationSec * 0.002,
+        "fal ElevenLabs Sound Effects v2, requested seconds");
+      break;
+    }
     default:
       throw new MediaRequestError("unsupported_model", ["modelId"]);
   }
   return {
     provider: model.provider,
     modelId: model.id,
-    operation: model.operations[0],
+    operation,
     providerInput,
     priceEstimate: estimate
   };

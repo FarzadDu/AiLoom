@@ -57,7 +57,59 @@ import { retainImageReferenceOnModeChange, usableReference } from "./media-refer
 type Models = Record<View, string>;
 type LocalFile = { name: string; mime: string; url: string; file?: File; assetId?: string };
 type OutputTab = "text" | "image" | "video" | "audio";
-type StudioRequestOptions = { modeIndex: number; aspect: string; quality: string; duration: number | "auto"; audio: boolean; modelId: string; language: string; repairStart: number; repairEnd: number; upscale: UpscaleSettings; lastFrame?: File; maskFile?: File; musicDurationSec: number; forceInstrumental: boolean };
+type StudioRequestOptions = { modeIndex: number; aspect: string; quality: string; duration: number | "auto"; audio: boolean; loop: boolean; promptOptimizer: boolean; modelId: string; language: string; repairStart: number; repairEnd: number; upscale: UpscaleSettings; lastFrame?: File; maskFile?: File; musicDurationSec: number; forceInstrumental: boolean };
+
+type VideoControls = {
+  aspects: readonly string[];
+  durations: readonly (number | "auto")[];
+  qualities: readonly ("low" | "standard" | "high" | "ultra")[];
+  audioToggle: boolean;
+};
+
+function videoControls(modelId: string, operation: string): VideoControls {
+  if (modelId.startsWith("bytedance/seedance-2.5/")) return {
+    aspects: ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    durations: ["auto", 4, 6, 8, 10, 15, 20, 30], qualities: ["low", "standard", "high"], audioToggle: true
+  };
+  if (modelId === "kling-3.0/video") return {
+    aspects: operation === "text_to_video" ? ["16:9", "9:16", "1:1"] : [],
+    durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    qualities: ["standard", "high", "ultra"], audioToggle: true
+  };
+  if (modelId === "bytedance/seedance-2-5") return {
+    aspects: [], durations: [], qualities: [], audioToggle: false
+  };
+  if (modelId.startsWith("fal-ai/kling-video/v3/standard/")) return {
+    aspects: operation === "text_to_video" ? ["16:9", "9:16", "1:1"] : [],
+    durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], qualities: [], audioToggle: true
+  };
+  if (modelId === "fal-ai/kling-video/v3/turbo/standard/text-to-video") return {
+    aspects: ["16:9", "9:16", "1:1"],
+    durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], qualities: [], audioToggle: false
+  };
+  if (modelId.startsWith("fal-ai/minimax/hailuo-2.3/standard/")) return {
+    aspects: [], durations: [6, 10], qualities: [], audioToggle: false
+  };
+  if (modelId === "fal-ai/luma-dream-machine/ray-2-flash") return {
+    aspects: ["16:9", "9:16", "4:3", "3:4", "21:9", "9:21"],
+    durations: [5, 9], qualities: ["low", "standard", "high"], audioToggle: false
+  };
+  if (modelId === "fal-ai/veo3.1") return {
+    aspects: ["16:9", "9:16"], durations: [4, 6, 8],
+    qualities: ["standard", "high", "ultra"], audioToggle: true
+  };
+  if (modelId.startsWith("fal-ai/wan/v2.7/")) return {
+    aspects: operation === "image_to_video" ? [] : ["16:9", "9:16", "1:1", "4:3", "3:4"],
+    durations: operation === "reference_to_video" ? [2, 3, 4, 5, 6, 7, 8, 9, 10]
+      : [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    qualities: ["standard", "high"], audioToggle: false
+  };
+  if (modelId === "wavespeed-ai/open-video/image-to-video") return {
+    aspects: [], durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+    qualities: ["low", "standard", "high"], audioToggle: false
+  };
+  return { aspects: ["16:9", "9:16"], durations: [4, 6, 8], qualities: ["standard", "high"], audioToggle: true };
+}
 
 const navIcons: Record<View, LucideIcon> = {
   chat: MessageCircle,
@@ -555,6 +607,8 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   const [language, setLanguage] = useState("auto");
   const [duration, setDuration] = useState<number | "auto">(8);
   const [generateAudio, setGenerateAudio] = useState(true);
+  const [loopVideo, setLoopVideo] = useState(false);
+  const [promptOptimizer, setPromptOptimizer] = useState(true);
   const [musicDurationSec, setMusicDurationSec] = useState(30);
   const [forceInstrumental, setForceInstrumental] = useState(false);
   const [clipDuration, setClipDuration] = useState(30);
@@ -598,12 +652,37 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
     : activeOperation === "text_to_video" ? item.id === "fal-ai/veo3.1/fast" || item.id === "bytedance/seedance-2.5/text-to-video"
     : activeOperation === "text_to_speech" ? item.id === "fal-ai/elevenlabs/tts/eleven-v3"
     : activeOperation === "text_to_music" ? item.id === "elevenlabs/music/v2" || item.id === "fal-ai/stable-audio-3/small/music/text-to-audio" : true);
-  const selectModels = relevantModels.length ? relevantModels : fallbackModels.map(item => ({ id: item.id, name: item.label }));
+  const selectModels: Array<{ id: string; name: string; provider?: string }> = relevantModels.length
+    ? relevantModels : fallbackModels.map(item => ({ id: item.id, name: item.label }));
   const effectiveModel = selectModels.some(item => item.id === model) ? model : selectModels[0]?.id || model;
-  const effectiveMusicDuration = effectiveModel === "elevenlabs/music/v2" ? musicDurationSec : Math.min(musicDurationSec, 120);
+  const selectedModel = availableModels.find(item => item.id === effectiveModel);
+  const videoOperation = activeMode === 1 && selectedModel?.operations.includes("image_to_video")
+    ? "image_to_video" : activeOperation || "text_to_video";
+  const videoProfile = videoControls(effectiveModel, videoOperation);
+  const imageAspectOptions = effectiveModel.startsWith("google/imagen4")
+    ? ["16:9", "1:1", "9:16"] : ["16:9", "1:1", "4:3", "9:16"];
+  const selectedAspect = view === "image" && !imageAspectOptions.includes(aspect)
+    ? imageAspectOptions[0]
+    : view === "video" && videoProfile.aspects.length
+      ? videoProfile.aspects.includes(aspect) ? aspect : videoProfile.aspects[0] : aspect;
+  const selectedDuration = view === "video" && videoProfile.durations.length > 0 && !videoProfile.durations.includes(duration)
+    ? videoProfile.durations.includes(5) ? 5 : videoProfile.durations.includes(8) ? 8 : videoProfile.durations[0] : duration;
+  const selectedQuality = view === "video" && videoProfile.qualities.length &&
+    !videoProfile.qualities.includes(quality as "low" | "standard" | "high" | "ultra") ? "standard" : quality;
+  const imageHasAspect = view === "image" && !["nano-banana-2", "nano-banana-pro"].includes(effectiveModel);
+  const imageHasQuality = imageHasAspect && (activeOperation === "character_to_image" ||
+    selectedModel?.provider === "wavespeed" || effectiveModel.startsWith("openai/gpt-image-2.5/") ||
+    selectedAspect === "1:1" && selectedModel?.provider === "fal");
+  const musicMaxDuration = effectiveModel === "elevenlabs/music/v2.5" || effectiveModel === "elevenlabs/music/v2" ? 600
+    : effectiveModel === "fal-ai/stable-audio-3/medium/text-to-audio" ? 380 : 120;
+  const musicDurationOptions = [15, 30, 60, 120, 180, 300, 380, 600].filter(value => value <= musicMaxDuration);
+  const effectiveMusicDuration = musicDurationOptions.includes(musicDurationSec) ? musicDurationSec : musicDurationOptions[0];
+  const jobModel = availableModels.find(item => item.id === job?.providerModel);
+  const speechJob = jobModel?.operations.includes("text_to_speech") || job?.providerModel === "fal-ai/elevenlabs/tts/eleven-v3";
+  const musicJob = jobModel?.operations.includes("text_to_music") ||
+    ["elevenlabs/music/v2", "fal-ai/stable-audio-3/small/music/text-to-audio"].includes(job?.providerModel ?? "");
   const displayJob = view === "image" && activeMode === 4 && job?.providerModel !== "fal-ai/ideogram/character" ? null
-    : view !== "audio" || !job || activeMode === 0 && job.providerModel === "fal-ai/elevenlabs/tts/eleven-v3" ||
-    activeMode === 1 && (job.providerModel === "elevenlabs/music/v2" || job.providerModel === "fal-ai/stable-audio-3/small/music/text-to-audio") ? job : null;
+    : view !== "audio" || !job || activeMode === 0 && speechJob || activeMode === 1 && musicJob ? job : null;
   const outputAssets = mediaAssetsFromJob(displayJob);
   const selectedAsset = library.find(asset => asset.id === selectedAssetId);
   const shownAssets: MediaAsset[] = selectedAsset ? [{ id: selectedAsset.id, kind: selectedAsset.kind,
@@ -715,7 +794,6 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
   const characterWorking = showCharacter && Boolean(job && job.providerModel === "fal-ai/ideogram/character" && ["queued", "submitting", "running"].includes(job.state));
   const audioWorking = view === "audio" && Boolean(job && ["queued", "submitting", "running"].includes(job.state));
   const needsReference = view === "image" && (activeMode === 1 || activeMode === 2 || activeMode === 3 || activeMode === 4) || view === "video" && (activeMode === 1 || activeMode === 2 || activeMode === 3);
-  const seedance = effectiveModel.startsWith("bytedance/seedance-2.5/");
   const handleGenerate = () => {
     if (showUpscale && !preview) { fileRef.current?.click(); return; }
     if (showInpaint && !preview) { fileRef.current?.click(); return; }
@@ -744,7 +822,8 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
       return;
     }
     setLastFrameError("");
-    onSubmit({ modeIndex: activeMode, aspect, quality, duration, audio: generateAudio, modelId: effectiveModel, language, repairStart, repairEnd,
+    onSubmit({ modeIndex: activeMode, aspect: selectedAspect, quality: selectedQuality, duration: selectedDuration,
+      audio: generateAudio, loop: loopVideo, promptOptimizer, modelId: effectiveModel, language, repairStart, repairEnd,
       musicDurationSec: effectiveMusicDuration, forceInstrumental,
       upscale: { factor: upscaleFactor, preset: upscalePreset, outputFormat: upscaleFormat },
       ...(showInpaint && inpaintMask ? { maskFile: inpaintMask } : {}),
@@ -819,23 +898,25 @@ function StudioPage({ view, locale, model, onModel, draft, onDraft, onSubmit, pr
           <div className="inspector-divider" />
           <div className="inspector-heading subtle"><span>{t.settings}</span></div>
           <div className="form-field"><label htmlFor="studio-project">{locale === "fa" ? "پروژه" : "Project"}</label><div className="select-shell"><ThemedSelect id="studio-project" value={projectId ?? ""} onValueChange={value => onProjectChange(value || null)} disabled={busy}><option value="">{locale === "fa" ? "بدون پروژه" : "No project"}</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</ThemedSelect></div></div>
-          <div className="form-field"><label htmlFor="studio-model">{t.model}</label><div className="select-shell"><ThemedSelect id="studio-model" value={effectiveModel} onValueChange={onModel} disabled={!selectModels.length}>{selectModels.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</ThemedSelect></div></div>
-           {view !== "audio" && !showUpscale && !showInpaint && effectiveModel !== "nano-banana-2" && <div className="form-field"><label htmlFor="aspect-ratio">{t.aspectRatio}</label><div className="select-shell"><ThemedSelect id="aspect-ratio" value={view === "video" && !seedance ? aspect === "9:16" ? "9:16" : "16:9" : aspect} onValueChange={setAspect}>{seedance && <option value="auto">{t.automatic}</option>}{seedance && <option value="21:9">21:9</option>}<option value="16:9">16:9</option>{(view === "image" || seedance) && <option value="1:1">1:1</option>}{(view === "image" || seedance) && <option value="4:3">4:3</option>}{seedance && <option value="3:4">3:4</option>}<option value="9:16">9:16</option></ThemedSelect></div></div>}
-           {!showUpscale && !showInpaint && (view === "video" && !showRepair || view === "image" && effectiveModel !== "nano-banana-2") && <div className="form-field"><label htmlFor="media-quality">{t.quality}</label><div className="select-shell"><ThemedSelect id="media-quality" value={seedance ? quality : quality === "low" ? "standard" : quality} onValueChange={setQuality}>{seedance && <option value="low">480p</option>}<option value="standard">{seedance ? "720p" : t.standard}</option><option value="high">{seedance ? "1080p" : t.high}</option></ThemedSelect></div></div>}
+          <div className="form-field"><label htmlFor="studio-model">{t.model} · {selectModels.length}</label><div className="select-shell"><ThemedSelect id="studio-model" value={effectiveModel} onValueChange={onModel} disabled={!selectModels.length}>{selectModels.map(option => <option key={option.id} value={option.id}>{option.name}{option.provider ? ` · ${option.provider === "kie" ? "Kie" : option.provider === "fal" ? "fal" : "WaveSpeed"}` : ""}</option>)}</ThemedSelect></div></div>
+           {!showUpscale && !showInpaint && (imageHasAspect || view === "video" && !showRepair && videoProfile.aspects.length > 0) && <div className="form-field"><label htmlFor="aspect-ratio">{t.aspectRatio}</label><div className="select-shell"><ThemedSelect id="aspect-ratio" value={selectedAspect} onValueChange={setAspect}>{(view === "image" ? imageAspectOptions : videoProfile.aspects).map(value => <option key={value} value={value}>{value === "auto" ? t.automatic : value}</option>)}</ThemedSelect></div></div>}
+           {!showUpscale && !showInpaint && (view === "video" && !showRepair && videoProfile.qualities.length > 0 || view === "image" && imageHasQuality) && <div className="form-field"><label htmlFor="media-quality">{t.quality}</label><div className="select-shell"><ThemedSelect id="media-quality" value={selectedQuality} onValueChange={setQuality}>{(view === "image" ? ["standard", "high"] : videoProfile.qualities).map(value => <option key={value} value={value}>{view === "video" ? effectiveModel === "kling-3.0/video" ? value === "standard" ? "Standard" : value === "high" ? "Pro" : "4K" : value === "low" ? effectiveModel === "fal-ai/luma-dream-machine/ray-2-flash" ? "540p" : "480p" : value === "standard" ? "720p" : value === "ultra" ? "4K" : "1080p" : value === "standard" ? t.standard : t.high}</option>)}</ThemedSelect></div></div>}
           {showUpscale && <>
             <div className="form-field"><label htmlFor="upscale-factor">{t.upscaleFactor}</label><div className="select-shell"><ThemedSelect id="upscale-factor" value={upscaleFactor} onValueChange={value => setUpscaleFactor(Number(value) as 2 | 4)}><option value={2}>2×</option><option value={4}>4×</option></ThemedSelect></div></div>
             <div className="form-field"><label htmlFor="upscale-preset">{t.upscalePreset}</label><div className="select-shell"><ThemedSelect id="upscale-preset" value={upscalePreset} onValueChange={value => setUpscalePreset(value as UpscalePreset)}>{upscalePresets.map(preset => <option value={preset} key={preset}>{preset}</option>)}</ThemedSelect></div></div>
             <div className="form-field"><label htmlFor="upscale-format">{t.upscaleFormat}</label><div className="select-shell"><ThemedSelect id="upscale-format" value={upscaleFormat} onValueChange={value => setUpscaleFormat(value as "jpeg" | "png")}><option value="jpeg">JPEG</option><option value="png">PNG</option></ThemedSelect></div></div>
           </>}
-           {view === "video" && !showRepair && <div className="form-field"><label htmlFor="video-duration">{t.duration}</label><div className="select-shell"><ThemedSelect id="video-duration" value={seedance ? duration : typeof duration === "number" && [4, 6, 8].includes(duration) ? duration : 8} onValueChange={value => setDuration(value === "auto" ? "auto" : Number(value))}>{seedance && <option value="auto">{t.automaticDuration}</option>}{(seedance ? [4, 6, 8, 10, 15, 20, 30] : [4, 6, 8]).map(value => <option key={value} value={value}>{value} {t.seconds}</option>)}</ThemedSelect></div></div>}
-           {view === "video" && !showRepair && <label className="toggle-field"><input type="checkbox" checked={generateAudio} onChange={event => setGenerateAudio(event.target.checked)} /><span>{t.videoAudio}</span></label>}
+           {view === "video" && !showRepair && videoProfile.durations.length > 0 && <div className="form-field"><label htmlFor="video-duration">{t.duration}</label><div className="select-shell"><ThemedSelect id="video-duration" value={selectedDuration} onValueChange={value => setDuration(value === "auto" ? "auto" : Number(value))}>{videoProfile.durations.map(value => <option key={value} value={value}>{value === "auto" ? t.automaticDuration : `${value} ${t.seconds}`}</option>)}</ThemedSelect></div></div>}
+           {view === "video" && !showRepair && videoProfile.audioToggle && <label className="toggle-field"><input type="checkbox" checked={generateAudio} onChange={event => setGenerateAudio(event.target.checked)} /><span>{t.videoAudio}</span></label>}
+           {view === "video" && !showRepair && effectiveModel === "fal-ai/luma-dream-machine/ray-2-flash" && <label className="toggle-field"><input type="checkbox" checked={loopVideo} onChange={event => setLoopVideo(event.target.checked)} /><span>{locale === "fa" ? "ویدیوی تکرارشونده" : "Seamless loop"}</span></label>}
+           {view === "video" && !showRepair && effectiveModel.startsWith("fal-ai/minimax/hailuo-2.3/standard/") && <label className="toggle-field"><input type="checkbox" checked={promptOptimizer} onChange={event => setPromptOptimizer(event.target.checked)} /><span>{locale === "fa" ? "بهینه‌سازی توصیف" : "Optimize prompt"}</span></label>}
           {view === "audio" && activeMode === 0 && <div className="form-field"><label htmlFor="audio-language">{t.language}</label><div className="select-shell"><ThemedSelect id="audio-language" value={language} onValueChange={setLanguage}><option value="auto">{t.automatic}</option><option value="en">{t.english}</option><option value="fa">{t.persian}</option></ThemedSelect></div></div>}
-          {view === "audio" && activeMode === 1 && <div className="form-field"><label htmlFor="music-duration">{t.duration}</label><div className="select-shell"><ThemedSelect id="music-duration" value={effectiveMusicDuration} onValueChange={value => setMusicDurationSec(Number(value))}>{[15, 30, 60, 120, ...(effectiveModel === "elevenlabs/music/v2" ? [180, 300] : [])].map(value => <option key={value} value={value}>{value} {t.seconds}</option>)}</ThemedSelect></div></div>}
-          {view === "audio" && activeMode === 1 && effectiveModel === "elevenlabs/music/v2" && <label className="toggle-field"><input type="checkbox" checked={forceInstrumental} onChange={event => setForceInstrumental(event.target.checked)} /><span>{t.musicInstrumental}</span></label>}
+          {view === "audio" && activeMode === 1 && <div className="form-field"><label htmlFor="music-duration">{t.duration}</label><div className="select-shell"><ThemedSelect id="music-duration" value={effectiveMusicDuration} onValueChange={value => setMusicDurationSec(Number(value))}>{musicDurationOptions.map(value => <option key={value} value={value}>{value} {t.seconds}</option>)}</ThemedSelect></div></div>}
+          {view === "audio" && activeMode === 1 && (effectiveModel === "elevenlabs/music/v2" || effectiveModel === "elevenlabs/music/v2.5") && <label className="toggle-field"><input type="checkbox" checked={forceInstrumental} onChange={event => setForceInstrumental(event.target.checked)} /><span>{t.musicInstrumental}</span></label>}
           {showRepair && <div className="repair-controls"><div className="repair-title"><Scissors size={17} aria-hidden="true" /><strong>{t.repairRange}</strong></div><p>{preview ? t.repairHint : t.noClip}</p><div className="repair-fields"><div className="form-field"><label htmlFor="repair-start">{t.startTime}</label><div className="input-suffix"><input id="repair-start" type="number" min={0} max={Math.max(0, repairEnd - 1)} step={0.1} value={repairStart} onChange={event => setRepairStart(Math.max(0, Math.min(repairEnd - .1, Number(event.target.value) || 0)))} /><span>s</span></div></div><div className="form-field"><label htmlFor="repair-end">{t.endTime}</label><div className="input-suffix"><input id="repair-end" type="number" min={repairStart + .1} max={clipDuration} step={0.1} value={repairEnd} onChange={event => setRepairEnd(Math.min(clipDuration, Math.max(repairStart + .1, Number(event.target.value) || repairStart + .1)))} /><span>s</span></div></div></div></div>}
           <div className="inspector-spacer" />
             <button className="primary-action" type="button" onClick={handleGenerate} disabled={busy || upscaleWorking || inpaintWorking || characterWorking || audioWorking}>{busy || upscaleWorking || inpaintWorking || characterWorking || audioWorking ? t.generationQueued : showUpscale ? t.upscaleAction : showRepair ? t.repairRange : t.generate}<ArrowRight size={17} aria-hidden="true" /></button>
-            {view === "audio" && activeMode === 1 && <p className="inspector-note">{effectiveModel === "elevenlabs/music/v2" ? t.musicElevenCost : t.musicStableCost}</p>}
+            {view === "audio" && activeMode === 1 && <p className="inspector-note">{selectedModel?.priceNote ?? t.noPriceEstimate}</p>}
             {showInpaint && <p className="inspector-note">{t.inpaintCost}</p>}
             {showCharacter && <p className="inspector-note">{t.characterCost}</p>}
         </aside>
@@ -992,7 +1073,10 @@ export default function WorkspaceApp() {
     catch { /* Private browsing can disable storage. */ }
     try {
       const savedModels = JSON.parse(readStorage("ailoom.models") ?? "{}") as Partial<Models>;
-      setModels({ ...defaultModels, ...Object.fromEntries(views.map(item => [item, item === "chat" && typeof savedModels[item] === "string" ? savedModels[item] : modelOptions[item].some(option => option.id === savedModels[item]) ? savedModels[item] : defaultModels[item]])) });
+      setModels({ ...defaultModels, ...Object.fromEntries(views.map(item => {
+        const saved = savedModels[item];
+        return [item, typeof saved === "string" && saved.length > 0 && saved.length <= 200 ? saved : defaultModels[item]];
+      })) });
     } catch { /* Ignore invalid local data. */ }
     const url = new URL(window.location.href);
     const directToken = url.pathname.match(/^\/invite\/([^/]+)\/?$/)?.[1];
@@ -1090,8 +1174,8 @@ export default function WorkspaceApp() {
         setMediaModels(catalog);
         setModels(previous => {
           const next = { ...previous };
-          const imageChoices = catalog.filter(item => item.operations.includes("text_to_image"));
-          const videoChoices = catalog.filter(item => item.operations.includes("text_to_video"));
+          const imageChoices = catalog.filter(item => item.outputKind === "image");
+          const videoChoices = catalog.filter(item => item.outputKind === "video");
           const audioChoices = catalog.filter(item => item.outputKind === "audio");
           if (imageChoices.length && !imageChoices.some(item => item.id === next.image)) next.image = imageChoices[0].id;
           if (videoChoices.length && !videoChoices.some(item => item.id === next.video)) next.video = videoChoices[0].id;
@@ -1148,18 +1232,23 @@ export default function WorkspaceApp() {
     } else if (isMediaView(nextView)) {
       let chosenModel = options?.modelId;
       let mode = 0;
-      if (nextView === "audio" && (chosenModel === "elevenlabs/music/v2" ||
-        chosenModel === "fal-ai/stable-audio-3/small/music/text-to-audio")) mode = 1;
-      if (file && nextView === "image") { mode = 1; chosenModel = "fal-ai/qwen-image-edit"; }
+      if (nextView === "audio" && mediaModels.some(item => item.id === chosenModel && item.operations.includes("text_to_music"))) mode = 1;
+      if (file && nextView === "image") {
+        mode = 1;
+        if (!mediaModels.some(item => item.id === chosenModel && item.operations.includes("image_edit"))) chosenModel = "fal-ai/qwen-image-edit";
+      }
       if (file && nextView === "video" && file.type.startsWith("image/")) {
         mode = 1;
-        chosenModel = options?.modelId?.startsWith("bytedance/seedance-2.5/")
-          ? "bytedance/seedance-2.5/reference-to-video" : "fal-ai/veo3.1/fast/image-to-video";
+        if (!mediaModels.some(item => item.id === chosenModel && (item.operations.includes("image_to_video") || item.operations.includes("reference_to_video")))) {
+          chosenModel = options?.modelId?.startsWith("bytedance/seedance-2.5/")
+            ? "bytedance/seedance-2.5/reference-to-video" : "fal-ai/veo3.1/fast/image-to-video";
+        }
       }
       if (file && nextView === "video" && file.type.startsWith("video/")) { mode = 2; chosenModel = "fal-ai/ltx-2.3-quality/inpaint"; }
       setStudioMode(mode);
       if (file) setPreview({ name: file.name, mime: file.type, file, url: URL.createObjectURL(file) });
-      if (chosenModel && modelOptions[nextView].some(item => item.id === chosenModel)) updateModel(nextView, chosenModel);
+      if (chosenModel && (mediaModels.some(item => item.id === chosenModel && item.outputKind === nextView) ||
+        modelOptions[nextView].some(item => item.id === chosenModel))) updateModel(nextView, chosenModel);
     }
   };
   const askSpecialist = (id: string, prompt: string) => {
@@ -1237,7 +1326,7 @@ export default function WorkspaceApp() {
         if (!active || !Array.isArray(body?.jobs)) return;
         const latest: Partial<Record<MediaView, MediaJob>> = {};
         for (const item of body.jobs) {
-          const kind = mediaViewForJob(item?.kind, item?.providerModel);
+          const kind = mediaViewForJob(item?.kind, item?.providerModel, mediaModels);
           if (!kind || latest[kind]) continue;
           const job = mediaJobFromPayload({ job: item });
           if (job) latest[kind] = job;
@@ -1246,7 +1335,7 @@ export default function WorkspaceApp() {
       })
       .catch(() => { /* A new job can still be submitted. */ });
     return () => { active = false; };
-  }, [user]);
+  }, [user, mediaModels]);
   useEffect(() => {
     if (!user) return;
     let active = true;
@@ -1875,7 +1964,8 @@ export default function WorkspaceApp() {
     if (!user) { openLogin(drafts[target], target); return; }
     const prompt = drafts[target].trim();
     if (!prompt && !imageUpscale) return;
-    const operation = imageUpscale ? "image_upscale" : imageInpaint ? "image_inpaint" : imageCharacter ? "character_to_image" : imageEdit ? "image_edit" : referenceVideo ? options.modelId === "fal-ai/veo3.1/fast/image-to-video" ? "image_to_video" : "reference_to_video" : videoRepair ? "temporal_inpaint" : firstLastVideo ? "first_last_frame_to_video" : target === "image" ? "text_to_image" : target === "video" ? "text_to_video" : musicGeneration ? "text_to_music" : "text_to_speech";
+    const chosenMediaModel = mediaModels.find(item => item.id === options.modelId);
+    const operation = imageUpscale ? "image_upscale" : imageInpaint ? "image_inpaint" : imageCharacter ? "character_to_image" : imageEdit ? "image_edit" : referenceVideo ? chosenMediaModel?.operations.includes("image_to_video") ? "image_to_video" : "reference_to_video" : videoRepair ? "temporal_inpaint" : firstLastVideo ? "first_last_frame_to_video" : target === "image" ? "text_to_image" : target === "video" ? "text_to_video" : musicGeneration ? "text_to_music" : "text_to_speech";
     const supported = mediaModels.length ? mediaModels.some(item => item.id === options.modelId && item.operations.includes(operation))
       : modelOptions[target].some(item => item.id === options.modelId);
     if (!supported && !videoRepair) {
@@ -1887,13 +1977,17 @@ export default function WorkspaceApp() {
       payload = {};
     } else if (target === "image") {
       payload = { modelId: options.modelId, operation: "text_to_image", prompt };
-      if (options.modelId === "fal-ai/flux-2-pro") {
+      if (chosenMediaModel?.provider === "fal" || options.modelId === "fal-ai/flux-2-pro") {
         const imageSizes: Record<string, string> = {
           "16:9": "landscape_16_9", "9:16": "portrait_16_9",
           "4:3": "landscape_4_3", "1:1": options.quality === "high" ? "square_hd" : "square"
         };
         payload.imageSize = imageSizes[options.aspect] ?? "landscape_16_9";
-      } else if (options.modelId === "wavespeed-ai/z-image/turbo") {
+        if (options.modelId.startsWith("openai/gpt-image-2.5/")) {
+          payload.quality = options.quality === "high" ? "high" : "medium";
+        }
+      } else if (chosenMediaModel?.provider === "wavespeed" && chosenMediaModel.operations.includes("text_to_image") ||
+        options.modelId === "wavespeed-ai/z-image/turbo") {
         const high = options.quality === "high";
         const dimensions: Record<string, [number, number]> = high
           ? { "16:9": [1536, 864], "9:16": [864, 1536], "4:3": [1536, 1152], "1:1": [1536, 1536] }
@@ -1901,6 +1995,8 @@ export default function WorkspaceApp() {
         const [width, height] = dimensions[options.aspect] ?? dimensions["16:9"];
         payload.width = width;
         payload.height = height;
+      } else if (options.modelId.startsWith("google/imagen4")) {
+        payload.aspectRatio = ["16:9", "1:1", "4:3", "9:16"].includes(options.aspect) ? options.aspect : "16:9";
       }
     } else if (target === "video") {
       if (options.modelId === "bytedance/seedance-2.5/text-to-video") {
@@ -1909,6 +2005,42 @@ export default function WorkspaceApp() {
           aspectRatio: ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"].includes(options.aspect) ? options.aspect : "16:9",
           resolution: options.quality === "low" ? "480p" : options.quality === "high" ? "1080p" : "720p",
           audio: options.audio };
+      } else if (options.modelId === "bytedance/seedance-2-5") {
+        payload = { modelId: options.modelId, operation: "text_to_video", prompt };
+      } else if (options.modelId === "kling-3.0/video") {
+        payload = { modelId: options.modelId, operation: "text_to_video", prompt,
+          durationSec: typeof options.duration === "number" ? Math.max(3, Math.min(15, options.duration)) : 5,
+          aspectRatio: ["16:9", "9:16", "1:1"].includes(options.aspect) ? options.aspect : "16:9",
+          audio: options.audio, mode: options.quality === "ultra" ? "4K" : options.quality === "high" ? "pro" : "std" };
+      } else if (options.modelId === "fal-ai/kling-video/v3/standard/text-to-video") {
+        payload = { modelId: options.modelId, operation: "text_to_video", prompt,
+          durationSec: typeof options.duration === "number" ? Math.max(3, Math.min(15, options.duration)) : 5,
+          aspectRatio: ["16:9", "9:16", "1:1"].includes(options.aspect) ? options.aspect : "16:9",
+          audio: options.audio };
+      } else if (options.modelId === "fal-ai/kling-video/v3/turbo/standard/text-to-video") {
+        payload = { modelId: options.modelId, operation: "text_to_video", prompt,
+          durationSec: typeof options.duration === "number" ? Math.max(3, Math.min(15, options.duration)) : 5,
+          aspectRatio: ["16:9", "9:16", "1:1"].includes(options.aspect) ? options.aspect : "16:9" };
+      } else if (options.modelId === "fal-ai/minimax/hailuo-2.3/standard/text-to-video") {
+        payload = { modelId: options.modelId, operation: "text_to_video", prompt,
+          durationSec: options.duration === 10 ? 10 : 6, promptOptimizer: options.promptOptimizer };
+      } else if (options.modelId === "fal-ai/luma-dream-machine/ray-2-flash") {
+        payload = { modelId: options.modelId, operation: "text_to_video", prompt,
+          durationSec: options.duration === 9 ? 9 : 5,
+          aspectRatio: ["16:9", "9:16", "4:3", "3:4", "21:9", "9:21"].includes(options.aspect) ? options.aspect : "16:9",
+          resolution: options.quality === "high" ? "1080p" : options.quality === "standard" ? "720p" : "540p",
+          loop: options.loop };
+      } else if (options.modelId === "fal-ai/veo3.1") {
+        payload = { modelId: options.modelId, operation: "text_to_video", prompt,
+          durationSec: typeof options.duration === "number" && [4, 6, 8].includes(options.duration) ? options.duration : 8,
+          aspectRatio: options.aspect === "9:16" ? "9:16" : "16:9",
+          resolution: options.quality === "ultra" ? "4k" : options.quality === "high" ? "1080p" : "720p",
+          audio: options.audio };
+      } else if (options.modelId === "fal-ai/wan/v2.7/text-to-video") {
+        payload = { modelId: options.modelId, operation: "text_to_video", prompt,
+          durationSec: typeof options.duration === "number" ? Math.max(2, Math.min(15, options.duration)) : 5,
+          aspectRatio: ["16:9", "9:16", "1:1", "4:3", "3:4"].includes(options.aspect) ? options.aspect : "16:9",
+          resolution: options.quality === "high" ? "1080p" : "720p" };
       } else {
         payload = { modelId: options.modelId, operation: "text_to_video", prompt,
           durationSec: typeof options.duration === "number" && [4, 6, 8].includes(options.duration) ? options.duration : 8,
@@ -1918,7 +2050,7 @@ export default function WorkspaceApp() {
     } else if (musicGeneration) {
       payload = { modelId: options.modelId, operation: "text_to_music", prompt,
         durationSec: options.musicDurationSec,
-        ...(options.modelId === "elevenlabs/music/v2" ? { forceInstrumental: options.forceInstrumental } : {}) };
+        ...(["elevenlabs/music/v2", "elevenlabs/music/v2.5"].includes(options.modelId) ? { forceInstrumental: options.forceInstrumental } : {}) };
     } else {
       payload = { modelId: options.modelId, operation: "text_to_speech", text: prompt };
       if (options.language === "en" || options.language === "fa") payload.languageCode = options.language;
@@ -2004,8 +2136,11 @@ export default function WorkspaceApp() {
             upscaleSubmissionRef.current = { identity, key: upscaleKey };
           } else if (imageEdit) {
             const sizes: Record<string, string> = { "16:9": "landscape_16_9", "9:16": "portrait_16_9", "4:3": "landscape_4_3", "1:1": options.quality === "high" ? "square_hd" : "square" };
-            payload = { modelId: "fal-ai/qwen-image-edit", operation: "image_edit", prompt,
+            payload = { modelId: options.modelId, operation: "image_edit", prompt,
               imageUrl: signed.url, imageSize: sizes[options.aspect] ?? "landscape_16_9" };
+            if (options.modelId.startsWith("openai/gpt-image-2.5/")) {
+              payload.quality = options.quality === "high" ? "high" : "medium";
+            }
           } else if (firstLastVideo) {
             const cachedLastFrame = lastFrameUploadRef.current;
             let lastAssetId = cachedLastFrame && cachedLastFrame.file === options.lastFrame ? cachedLastFrame.assetId : null;
@@ -2039,8 +2174,32 @@ export default function WorkspaceApp() {
               durationSec: typeof options.duration === "number" && [4, 6, 8].includes(options.duration) ? options.duration : 8,
               aspectRatio: options.aspect === "9:16" ? "9:16" : "16:9",
               resolution: options.quality === "high" ? "1080p" : "720p", audio: options.audio };
+          } else if (options.modelId === "kling-3.0/video") {
+            payload = { modelId: options.modelId, operation: "image_to_video", prompt, imageUrl: signed.url,
+              durationSec: typeof options.duration === "number" ? Math.max(3, Math.min(15, options.duration)) : 5,
+              audio: options.audio, mode: options.quality === "ultra" ? "4K" : options.quality === "high" ? "pro" : "std" };
+          } else if (options.modelId === "fal-ai/kling-video/v3/standard/image-to-video") {
+            payload = { modelId: options.modelId, operation: "image_to_video", prompt, imageUrl: signed.url,
+              durationSec: typeof options.duration === "number" ? Math.max(3, Math.min(15, options.duration)) : 5,
+              audio: options.audio };
+          } else if (options.modelId === "fal-ai/minimax/hailuo-2.3/standard/image-to-video") {
+            payload = { modelId: options.modelId, operation: "image_to_video", prompt, imageUrl: signed.url,
+              durationSec: options.duration === 10 ? 10 : 6, promptOptimizer: options.promptOptimizer };
+          } else if (options.modelId === "fal-ai/wan/v2.7/image-to-video") {
+            payload = { modelId: options.modelId, operation: "image_to_video", prompt, imageUrl: signed.url,
+              durationSec: typeof options.duration === "number" ? Math.max(2, Math.min(15, options.duration)) : 5,
+              resolution: options.quality === "high" ? "1080p" : "720p" };
+          } else if (options.modelId === "wavespeed-ai/open-video/image-to-video") {
+            payload = { modelId: options.modelId, operation: "image_to_video", prompt, imageUrl: signed.url,
+              durationSec: typeof options.duration === "number" ? Math.max(3, Math.min(20, options.duration)) : 5,
+              resolution: options.quality === "low" ? "480p" : options.quality === "high" ? "1080p" : "720p" };
+          } else if (options.modelId === "fal-ai/wan/v2.7/reference-to-video") {
+            payload = { modelId: options.modelId, operation: "reference_to_video", prompt, imageUrls: [signed.url],
+              durationSec: typeof options.duration === "number" ? Math.max(2, Math.min(10, options.duration)) : 5,
+              aspectRatio: ["16:9", "9:16", "1:1", "4:3", "3:4"].includes(options.aspect) ? options.aspect : "16:9",
+              resolution: options.quality === "high" ? "1080p" : "720p" };
           } else {
-            payload = { modelId: "bytedance/seedance-2.5/reference-to-video", operation: "reference_to_video", prompt,
+            payload = { modelId: options.modelId, operation: "reference_to_video", prompt,
               imageUrls: [signed.url], durationSec: options.duration === "auto" ? "auto" : Math.max(4, Math.min(30, options.duration)),
               aspectRatio: ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"].includes(options.aspect) ? options.aspect : "16:9",
               resolution: options.quality === "low" ? "480p" : options.quality === "high" ? "1080p" : "720p",
@@ -2127,7 +2286,7 @@ export default function WorkspaceApp() {
         {view === "chat" && (user
           ? <ChatWorkspace locale={locale} user={user} conversations={conversations} historyLoading={historyLoading} selectedId={selectedConversationId} projects={projects} selectedProjectId={selectedProjectId} projectBusy={projectBusy} projectError={projectError} onSelectProject={selectProject} onCreateProject={createChatProject} onUpdateProject={updateChatProject} onDeleteProject={deleteChatProject} onMoveConversation={moveConversation} messages={messages} messageLoading={messagesLoading} pending={chatPending} error={chatError} showSeparateRequest={chatNeedsDecision} previousRequestId={chatPreviousRequestId} onSeparateRequest={startSeparateTextRequest} prompt={drafts.chat} onPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} onModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSend={() => void sendChat()} onSelect={id => void selectConversation(id)} onNew={newConversation} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />
           : <ChatLanding locale={locale} prompt={drafts.chat} setPrompt={value => updateDraft("chat", value)} model={chatMode === "image" ? imageChatModel : models.chat} setModel={value => chatMode === "image" ? setImageChatModel(value) : updateModel("chat", value)} modelList={chatMode === "image" ? imageChatModels : chatModels} mode={chatMode} onMode={changeChatMode} webSearch={webSearch} onWebSearch={setWebSearch} onSubmit={() => void sendChat()} onNavigate={navigate} onStarter={useWorkflow} attachment={attachment} onAttach={event => onUpload(event, "chat")} onRemoveAttachment={() => setAttachment(null)} inputRef={promptRef} />)}
-        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} onUseReference={setPreview} onLastFrameChange={() => { lastFrameUploadRef.current = null; firstLastSubmissionRef.current = null; }} availableModels={mediaModels.filter(item => item.outputKind === view && (view !== "video" || ["fal-ai/veo3.1/fast", "fal-ai/veo3.1/fast/image-to-video", "fal-ai/veo3.1/fast/first-last-frame-to-video", "bytedance/seedance-2.5/text-to-video", "bytedance/seedance-2.5/reference-to-video", "fal-ai/ltx-2.3-quality/inpaint"].includes(item.id)))} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} onLogin={() => openLogin("", view)} projects={projects} projectId={mediaProjectId} onProjectChange={setMediaProjectId} />}
+        {isMediaView(view) && <StudioPage key={`${view}-${studioMode}`} initialMode={studioMode} view={view} locale={locale} model={models[view]} onModel={value => updateModel(view, value)} draft={drafts[view]} onDraft={value => updateDraft(view, value)} onSubmit={options => void startGeneration(view, options)} preview={preview} onFile={event => onUpload(event, view)} onRemoveFile={() => setPreview(null)} onUseReference={setPreview} onLastFrameChange={() => { lastFrameUploadRef.current = null; firstLastSubmissionRef.current = null; }} availableModels={mediaModels.filter(item => item.outputKind === view)} job={mediaJobs[view] ?? null} jobError={mediaErrors[view] ?? ""} busy={Boolean(mediaSubmitting[view])} signedIn={Boolean(user)} onLogin={() => openLogin("", view)} projects={projects} projectId={mediaProjectId} onProjectChange={setMediaProjectId} />}
         {view === "explore" && <ConnectedExplorePage locale={locale} user={user} onUse={useWorkflow} onLogin={() => openLogin()} />}
         {view === "specialists" && <ConnectedSpecialistsPage locale={locale} onAsk={askSpecialist} />}
       </main>

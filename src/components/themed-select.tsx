@@ -44,12 +44,14 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
   const selectedIndex = choices.findIndex(choice => choice.value === selectedValue);
   const selected = choices[selectedIndex];
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const [missingRequired, setMissingRequired] = useState(false);
   const [activeIndex, setActiveIndex] = useState(Math.max(0, selectedIndex));
   const [position, setPosition] = useState({ top: 0, left: 0, width: 200, maxHeight: 300 });
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const filterRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef("");
   const searchTimeRef = useRef(0);
   const generatedId = useId().replace(/:/g, "");
@@ -57,6 +59,11 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
   const listId = `${triggerId}-listbox`;
   const errorId = `${triggerId}-required`;
   const choiceKey = JSON.stringify(choices.map(choice => [choice.value, choice.disabled]));
+  const searchable = choices.length > 12;
+  const shownChoices = choices.map((choice, index) => ({ choice, index }))
+    .filter(item => !searchable || !query.trim() ||
+      `${item.choice.searchText} ${item.choice.value}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const enabledIndexes = shownChoices.filter(item => !item.choice.disabled).map(item => item.index);
 
   const updatePosition = () => {
     const box = triggerRef.current?.getBoundingClientRect();
@@ -68,13 +75,14 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
     const placeAbove = below < 180 && above > below;
     const available = Math.max(100, placeAbove ? above : below);
     const maxHeight = Math.min(340, available);
-    const expectedHeight = Math.min(maxHeight, choices.length * 38 + 12);
+    const expectedHeight = Math.min(maxHeight, shownChoices.length * 38 + 12 + (searchable ? 52 : 0));
     setPosition({ top: placeAbove ? Math.max(8, box.top - expectedHeight - 4) : box.bottom + 4,
       left, width, maxHeight });
   };
 
   const openMenu = () => {
     if (disabled || !choices.length) return;
+    setQuery("");
     setActiveIndex(selectedIndex >= 0 && !choices[selectedIndex].disabled
       ? selectedIndex : Math.max(0, choices.findIndex(choice => !choice.disabled)));
     updatePosition();
@@ -82,7 +90,7 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
   };
   const choose = (index: number) => {
     const option = choices[index];
-    if (!option || option.disabled) return;
+    if (!option || option.disabled || searchable && !shownChoices.some(item => item.index === index)) return;
     onValueChange(option.value);
     setMissingRequired(false);
     setOpen(false);
@@ -90,11 +98,11 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
   };
   const move = (direction: number) => {
     if (!open) { openMenu(); return; }
-    if (!choices.some(choice => !choice.disabled)) return;
-    let next = activeIndex;
-    do { next = (next + direction + choices.length) % choices.length; }
-    while (choices[next].disabled && next !== activeIndex);
-    setActiveIndex(next);
+    if (!enabledIndexes.length) return;
+    const position = enabledIndexes.indexOf(activeIndex);
+    const next = position < 0 ? direction > 0 ? 0 : enabledIndexes.length - 1
+      : (position + direction + enabledIndexes.length) % enabledIndexes.length;
+    setActiveIndex(enabledIndexes[next]);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (disabled) return;
@@ -130,6 +138,22 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
       if (index >= 0) { if (!open) openMenu(); setActiveIndex(index); }
     }
   };
+  const onFilterKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault(); move(event.key === "ArrowDown" ? 1 : -1);
+    } else if (event.key === "Enter") {
+      event.preventDefault(); choose(activeIndex);
+    } else if (event.key === "Escape") {
+      event.preventDefault(); setOpen(false); triggerRef.current?.focus();
+    }
+  };
+
+  useEffect(() => { if (open && searchable) filterRef.current?.focus(); }, [open, searchable]);
+  useEffect(() => { if (open) updatePosition(); }, [open, query, choiceKey]);
+  useEffect(() => {
+    if (!open || !searchable) return;
+    if (!enabledIndexes.includes(activeIndex)) setActiveIndex(enabledIndexes[0] ?? 0);
+  }, [open, searchable, query, choiceKey]);
 
   useEffect(() => {
     if (!open) return;
@@ -187,11 +211,15 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
       <span className="ailoom-select-value">{selected?.label ?? "—"}</span><ChevronDown size={16} aria-hidden="true" />
     </button>
     {missingRequired && <span id={errorId} className="ailoom-select-error" role="alert">{document.documentElement.lang === "fa" ? "یک گزینه انتخاب کنید." : "Choose an option."}</span>}
-    {open && createPortal(<div ref={menuRef} id={listId} role="listbox" className="ailoom-select-menu"
+    {open && createPortal(<div ref={menuRef} className="ailoom-select-menu"
       dir={document.documentElement.dir === "rtl" ? "rtl" : "ltr"}
-      aria-labelledby={ariaLabel ? undefined : triggerId} aria-label={ariaLabel}
       style={{ top: position.top, left: position.left, width: position.width, maxHeight: position.maxHeight }}>
-      {choices.map((choice, index) => <div key={`${choice.value}-${index}`} id={`${listId}-option-${index}`}
+      {searchable && <input ref={filterRef} className="ailoom-select-search" type="search"
+        aria-label={document.documentElement.lang === "fa" ? "جست‌وجوی مدل" : "Search models"}
+        aria-controls={listId} aria-activedescendant={shownChoices.some(item => item.index === activeIndex) ? `${listId}-option-${activeIndex}` : undefined}
+        value={query} onChange={event => setQuery(event.target.value)} onKeyDown={onFilterKeyDown} />}
+      <div id={listId} role="listbox" aria-labelledby={ariaLabel ? undefined : triggerId} aria-label={ariaLabel}>
+      {shownChoices.map(({ choice, index }) => <div key={`${choice.value}-${index}`} id={`${listId}-option-${index}`}
         data-choice-index={index} role="option" aria-selected={index === selectedIndex}
         aria-disabled={choice.disabled || undefined} className="ailoom-select-option"
         data-active={index === activeIndex ? "true" : undefined}
@@ -199,6 +227,8 @@ export function ThemedSelect({ id, name, value, onValueChange, children, disable
         onClick={() => choose(index)}>
         <span>{choice.label}</span>{index === selectedIndex && <Check size={15} aria-hidden="true" />}
       </div>)}
+      {!shownChoices.length && <p className="ailoom-select-empty" role="status">{document.documentElement.lang === "fa" ? "مدلی پیدا نشد." : "No matching models."}</p>}
+      </div>
     </div>, document.body)}
   </div>;
 }

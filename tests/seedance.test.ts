@@ -11,7 +11,7 @@ const audioUrl = "https://assets.example.com/music.mp3";
 
 test("Seedance 2.5 catalog exposes distinct documented text and reference endpoints", () => {
   assert.equal(listMediaModels("text_to_video").some(model => model.id === textModel), true);
-  assert.deepEqual(listMediaModels("reference_to_video").map(model => model.id), [referenceModel]);
+  assert.equal(listMediaModels("reference_to_video").some(model => model.id === referenceModel), true);
   assert.equal(listMediaModels().find(model => model.id === referenceModel)?.docsUrl,
     "https://fal.ai/models/bytedance/seedance-2.5/reference-to-video/api");
 });

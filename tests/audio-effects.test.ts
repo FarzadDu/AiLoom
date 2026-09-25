@@ -31,7 +31,9 @@ const input = { modelId: MODEL_ID, operation: "text_to_sound_effect", prompt: " 
   durationSec: 10, negativePrompt: " no speech ", outputFormat: "wav", seed: 84 };
 
 test("SFX catalog, validation and fal payload follow the documented endpoint", () => {
-  assert.deepEqual(listMediaModels("text_to_sound_effect").map(model => model.id), [MODEL_ID]);
+  assert.deepEqual(listMediaModels("text_to_sound_effect").map(model => model.id), [
+    MODEL_ID, "fal-ai/elevenlabs/sound-effects/v2"
+  ]);
   const prepared = prepareMediaRequest(input);
   assert.equal(prepared.provider, "fal");
   assert.equal(prepared.priceEstimate, null);

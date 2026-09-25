@@ -8,12 +8,18 @@ import { BoundedJsonError, readBoundedJson } from "@/server/storage/bounded-json
 
 export const runtime = "nodejs";
 
-const MODEL_ID = "fal-ai/stable-audio-3/small/sfx/text-to-audio";
+const MODEL_IDS = new Set([
+  "fal-ai/stable-audio-3/small/sfx/text-to-audio",
+  "fal-ai/elevenlabs/sound-effects/v2"
+]);
 
 export async function GET(request: Request) {
   const current = await getCurrentUser(request.headers);
   if (!current) return Response.json({ error: "Sign in required." }, { status: 401 });
-  const effects = listGenerationJobs(current.id, { limit: 100, providerModel: MODEL_ID });
+  const effects = [...MODEL_IDS].flatMap(providerModel =>
+    listGenerationJobs(current.id, { limit: 100, providerModel }))
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .slice(0, 100);
   return Response.json({ effects: effects.map(publicJob) },
     { headers: { "Cache-Control": "private, no-store" } });
 }
@@ -37,7 +43,7 @@ export async function POST(request: Request) {
   }
   try {
     const prepared = prepareMediaRequest(input);
-    if (prepared.modelId !== MODEL_ID || prepared.operation !== "text_to_sound_effect") {
+    if (!MODEL_IDS.has(prepared.modelId) || prepared.operation !== "text_to_sound_effect") {
       return Response.json({ error: "Unsupported sound effect model." }, { status: 422 });
     }
     const effect = createGenerationJob(current.id, {

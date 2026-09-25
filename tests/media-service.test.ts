@@ -299,9 +299,11 @@ test("Kie task failures do not expose raw provider failure messages", async () =
   assert.equal(JSON.stringify(task).includes("secret"), false);
 });
 
-test("music catalog and payloads follow the two documented fal schemas", () => {
+test("music catalog and payloads follow the documented fal schemas", () => {
   assert.deepEqual(listMediaModels("text_to_music").map(model => model.id), [
-    "elevenlabs/music/v2", "fal-ai/stable-audio-3/small/music/text-to-audio"
+    "elevenlabs/music/v2", "elevenlabs/music/v2.5",
+    "fal-ai/stable-audio-3/small/music/text-to-audio",
+    "fal-ai/stable-audio-3/medium/text-to-audio"
   ]);
   const eleven = prepareMediaRequest({
     modelId: "elevenlabs/music/v2", operation: "text_to_music",

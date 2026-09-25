@@ -8,22 +8,30 @@ type Locale = "en" | "fa";
 type Theme = "light" | "dark";
 type Effect = {
   id: string;
+  providerModel: string;
   state: "queued" | "submitting" | "running" | "succeeded" | "failed" | "cancelled";
   errorCode: string | null;
   createdAt: string;
   output: unknown;
 };
 type EffectInput = {
-  modelId: "fal-ai/stable-audio-3/small/sfx/text-to-audio";
+  modelId: typeof STABLE_MODEL_ID | typeof ELEVEN_MODEL_ID;
   operation: "text_to_sound_effect";
   prompt: string;
   durationSec: number;
   negativePrompt?: string;
-  outputFormat: "mp3" | "wav";
+  outputFormat?: "mp3" | "wav";
   seed?: number;
+  loop?: boolean;
+  promptInfluence?: number;
 };
 
-const MODEL_ID = "fal-ai/stable-audio-3/small/sfx/text-to-audio";
+const STABLE_MODEL_ID = "fal-ai/stable-audio-3/small/sfx/text-to-audio";
+const ELEVEN_MODEL_ID = "fal-ai/elevenlabs/sound-effects/v2";
+const modelDocs: Record<EffectInput["modelId"], string> = {
+  [STABLE_MODEL_ID]: "https://fal.ai/models/fal-ai/stable-audio-3/small/sfx/text-to-audio/api",
+  [ELEVEN_MODEL_ID]: "https://fal.ai/models/fal-ai/elevenlabs/sound-effects/v2/api"
+};
 const presets = [
   { en: "Footsteps", fa: "صدای قدم", prompt: "Close, realistic footsteps crossing a wet stone corridor, with natural reflections and no music." },
   { en: "Cinematic hit", fa: "ضربهٔ سینمایی", prompt: "A single deep cinematic impact with a crisp metallic attack and a long spacious tail, no melody." },
@@ -33,12 +41,13 @@ const presets = [
 const copy = {
   en: {
     back: "Back to Ailoom", eyebrow: "AUDIO / SOUND EFFECTS", title: "Make the moment sound real.",
-    subtitle: "Describe a scene, movement, impact, or atmosphere. Create a private sound effect with Stable Audio 3 Small SFX on fal.",
+    subtitle: "Describe a scene, movement, impact, or atmosphere. Choose a model and create a private sound effect.",
     signIn: "Sign in on the home page to create and hear your private sound effects.", signedIn: "Signed in as",
     formTitle: "Create a sound", prompt: "Describe the sound", placeholder: "A heavy wooden door creaks open in an empty hall…",
-    examples: "Start with a scene", duration: "Length", format: "Format", avoid: "Avoid (optional)",
+    examples: "Start with a scene", model: "Model", duration: "Length", format: "Format", avoid: "Avoid (optional)",
+    loop: "Seamless loop", influence: "Prompt influence (0–1)",
     avoidPlaceholder: "e.g. music, voices, distortion", seed: "Seed (optional)", seedHint: "Use the same number to reproduce a similar take.",
-    create: "Generate sound", creating: "Adding to queue…", provider: "fal · Stable Audio 3 Small SFX",
+    create: "Generate sound", creating: "Adding to queue…", provider: "fal · sound effects",
     cost: "fal may charge for each generation. The exact price depends on your settings and account; this studio does not quote a fixed price.",
     private: "Prompts go to fal when you submit. Completed audio is saved in your private Ailoom library (up to 100 MB per file).",
     source: "Model documentation", list: "Your sound effects", empty: "No effects yet. Describe a sound to begin.",
@@ -52,12 +61,13 @@ const copy = {
   },
   fa: {
     back: "بازگشت به Ailoom", eyebrow: "صدا / افکت صوتی", title: "به لحظه جان بده.",
-    subtitle: "صحنه، حرکت، ضربه یا فضا را توصیف کن. با Stable Audio 3 Small SFX در fal افکت صوتی خصوصی بساز.",
+    subtitle: "صحنه، حرکت، ضربه یا فضا را توصیف کن. مدل را انتخاب کن و افکت صوتی خصوصی بساز.",
     signIn: "برای ساختن و شنیدن افکت‌های خصوصی‌ات در صفحهٔ اصلی وارد شو.", signedIn: "واردشده با نام",
     formTitle: "ساخت صدا", prompt: "صدا را توصیف کن", placeholder: "در چوبی سنگین در تالاری خالی با صدای جیرجیر باز می‌شود…",
-    examples: "از یک صحنه شروع کن", duration: "زمان", format: "فرمت", avoid: "چیزهایی که نباشد (اختیاری)",
+    examples: "از یک صحنه شروع کن", model: "مدل", duration: "زمان", format: "فرمت", avoid: "چیزهایی که نباشد (اختیاری)",
+    loop: "حلقهٔ پیوسته", influence: "میزان پیروی از توصیف (۰ تا ۱)",
     avoidPlaceholder: "مثلاً موسیقی، گفتار، اعوجاج", seed: "عدد تکرار (اختیاری)", seedHint: "برای ساخت برداشت مشابه از یک عدد یکسان استفاده کن.",
-    create: "ساخت افکت صوتی", creating: "در حال افزودن به صف…", provider: "fal · Stable Audio 3 Small SFX",
+    create: "ساخت افکت صوتی", creating: "در حال افزودن به صف…", provider: "fal · افکت صوتی",
     cost: "ممکن است fal برای هر تولید هزینه بگیرد. مبلغ دقیق به تنظیمات و حسابت بستگی دارد؛ این صفحه قیمت قطعی اعلام نمی‌کند.",
     private: "پس از ارسال، متن توصیف به fal فرستاده می‌شود. صدای نهایی در کتابخانهٔ خصوصی Ailoom ذخیره می‌شود (حداکثر ۱۰۰ مگابایت برای هر فایل).",
     source: "مستندات مدل", list: "افکت‌های صوتی تو", empty: "هنوز افکتی ساخته نشده است. یک صدا را توصیف کن.",
@@ -93,10 +103,13 @@ export default function EffectsStudio({ signedIn, name, userId }: {
   const [theme, setTheme] = useState<Theme>("light");
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [modelId, setModelId] = useState<EffectInput["modelId"]>(STABLE_MODEL_ID);
   const [negativePrompt, setNegativePrompt] = useState("");
   const [durationSec, setDurationSec] = useState(10);
   const [outputFormat, setOutputFormat] = useState<"mp3" | "wav">("mp3");
   const [seed, setSeed] = useState("");
+  const [loop, setLoop] = useState(false);
+  const [promptInfluence, setPromptInfluence] = useState(0.3);
   const [effects, setEffects] = useState<Effect[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -168,10 +181,12 @@ export default function EffectsStudio({ signedIn, name, userId }: {
     const description = prompt.trim();
     if (!description || description.length > 4000) { setError(t.promptRequired); return; }
     if (busy) return;
-    const input: EffectInput = { modelId: MODEL_ID, operation: "text_to_sound_effect",
-      prompt: description, durationSec, outputFormat,
-      ...(negativePrompt.trim() ? { negativePrompt: negativePrompt.trim() } : {}),
-      ...(seed.trim() ? { seed: Number(seed) } : {}) };
+    const input: EffectInput = modelId === ELEVEN_MODEL_ID
+      ? { modelId, operation: "text_to_sound_effect", prompt: description, durationSec,
+        outputFormat: "mp3", loop, promptInfluence }
+      : { modelId, operation: "text_to_sound_effect", prompt: description, durationSec, outputFormat,
+        ...(negativePrompt.trim() ? { negativePrompt: negativePrompt.trim() } : {}),
+        ...(seed.trim() ? { seed: Number(seed) } : {}) };
     const fingerprint = JSON.stringify(input);
     const key = pending.current?.fingerprint === fingerprint ? pending.current.key : crypto.randomUUID();
     pending.current = { fingerprint, key };
@@ -221,6 +236,13 @@ export default function EffectsStudio({ signedIn, name, userId }: {
         <section className={styles.card} aria-labelledby="effects-form-title">
           <div className={styles.cardHeading}><div><small>01 / CREATE</small><h2 id="effects-form-title">{t.formTitle}</h2></div><span className={styles.modelBadge}>SFX</span></div>
           <form onSubmit={event => void create(event)}>
+            <label htmlFor="effect-model">{t.model}<ThemedSelect id="effect-model" value={modelId} onValueChange={value => {
+              setModelId(value as EffectInput["modelId"]);
+              if (value === ELEVEN_MODEL_ID && durationSec > 22) setDurationSec(20);
+            }}>
+              <option value={STABLE_MODEL_ID}>Stable Audio 3 Small SFX · fal</option>
+              <option value={ELEVEN_MODEL_ID}>ElevenLabs Sound Effects v2 · fal</option>
+            </ThemedSelect></label>
             <label htmlFor="effect-prompt">{t.prompt}</label>
             <textarea id="effect-prompt" value={prompt} onChange={event => setPrompt(event.target.value)} maxLength={4000} rows={5}
               placeholder={t.placeholder} dir={/[\u0590-\u08ff]/.test(prompt) ? "rtl" : "ltr"} />
@@ -228,23 +250,25 @@ export default function EffectsStudio({ signedIn, name, userId }: {
             <div className={styles.presets}>{presets.map(item => <button key={item.en} type="button" onClick={() => setPrompt(item.prompt)}>{item[locale]}</button>)}</div>
             <div className={styles.settings}>
               <label htmlFor="effect-duration">{t.duration}<ThemedSelect id="effect-duration" value={durationSec} onValueChange={value => setDurationSec(Number(value))}>
-                {[5, 10, 20, 30].map(seconds => <option key={seconds} value={seconds}>{seconds} s</option>)}</ThemedSelect></label>
-              <label htmlFor="effect-format">{t.format}<ThemedSelect id="effect-format" value={outputFormat} onValueChange={value => setOutputFormat(value as "mp3" | "wav")}><option value="mp3">MP3</option><option value="wav">WAV</option></ThemedSelect></label>
+                {(modelId === ELEVEN_MODEL_ID ? [5, 10, 20, 22] : [5, 10, 20, 30])
+                  .map(seconds => <option key={seconds} value={seconds}>{seconds} s</option>)}</ThemedSelect></label>
+              {modelId === STABLE_MODEL_ID ? <label htmlFor="effect-format">{t.format}<ThemedSelect id="effect-format" value={outputFormat} onValueChange={value => setOutputFormat(value as "mp3" | "wav")}><option value="mp3">MP3</option><option value="wav">WAV</option></ThemedSelect></label>
+                : <label htmlFor="effect-influence">{t.influence}<input id="effect-influence" type="number" min={0} max={1} step={0.1} value={promptInfluence} onChange={event => setPromptInfluence(Number(event.target.value))} /></label>}
             </div>
-            <div className={styles.settings}>
+            {modelId === STABLE_MODEL_ID ? <div className={styles.settings}>
               <label htmlFor="effect-negative">{t.avoid}<input id="effect-negative" value={negativePrompt} onChange={event => setNegativePrompt(event.target.value)} maxLength={1000} placeholder={t.avoidPlaceholder} /></label>
               <label htmlFor="effect-seed">{t.seed}<input id="effect-seed" type="number" min={0} max={2147483647} step={1} value={seed} onChange={event => setSeed(event.target.value)} placeholder={t.seedHint} /></label>
-            </div>
+            </div> : <label className={styles.checkbox}><input type="checkbox" checked={loop} onChange={event => setLoop(event.target.checked)} />{t.loop}</label>}
             <div className={styles.submitRow}><button className={styles.action} type="submit" disabled={busy}>{busy ? t.creating : t.create}</button><p>{t.cost}</p></div>
           </form>
-          <div className={styles.disclosure}><p>{t.private}</p><a href="https://fal.ai/models/fal-ai/stable-audio-3/small/sfx/text-to-audio/api" target="_blank" rel="noreferrer">{t.source} ↗</a></div>
+          <div className={styles.disclosure}><p>{t.private}</p><a href={modelDocs[modelId]} target="_blank" rel="noreferrer">{t.source} ↗</a></div>
         </section>
         <section className={styles.library} aria-labelledby="effects-list-title">
           <div className={styles.libraryHeading}><div><small>02 / LIBRARY</small><h2 id="effects-list-title">{t.list}</h2></div><button type="button" onClick={() => void refresh()}>{t.refresh}</button></div>
           {!effects.length ? <p className={styles.empty}>{t.empty}</p> : <ul className={styles.list}>{effects.map(item => {
             const audioUrl = privateAudioUrl(item.output);
             return <li key={item.id} className={styles.effect}>
-              <div className={styles.effectTop}><span className={styles.soundGlyph} aria-hidden="true">◍</span><div><strong>{new Date(item.createdAt).toLocaleString(locale)}</strong><small>{item.id.slice(0, 8)}</small></div><span className={styles.state} data-state={item.state}>{t[item.state]}</span></div>
+              <div className={styles.effectTop}><span className={styles.soundGlyph} aria-hidden="true">◍</span><div><strong>{new Date(item.createdAt).toLocaleString(locale)}</strong><small>{item.providerModel === ELEVEN_MODEL_ID ? "ElevenLabs SFX v2" : "Stable Audio 3 Small SFX"} · {item.id.slice(0, 8)}</small></div><span className={styles.state} data-state={item.state}>{t[item.state]}</span></div>
               {audioUrl && <div className={styles.player}><audio controls preload="none" src={audioUrl} /><a href={audioUrl} download>{t.download} ↗</a></div>}
               {item.state === "failed" && <p className={styles.failure}>{item.errorCode === "submission_uncertain" ? t.uncertain : item.errorCode === "output_import_failed" ? t.retryDownload : t.genericFailure}</p>}
             </li>;

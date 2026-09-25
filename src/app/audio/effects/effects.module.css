@@ -24,6 +24,8 @@
 .card :global(.ailoom-select-trigger) { min-height: 46px; font-size: 15px; }
 .card textarea { min-height: 148px; resize: vertical; line-height: 1.65; }
 .card textarea:focus, .card input:focus { border-color: var(--accent); }
+.card .checkbox { display: inline-flex; align-items: center; gap: 10px; width: fit-content; min-height: 42px; }
+.card .checkbox input { width: 18px; height: 18px; min-height: 18px; margin: 0; padding: 0; accent-color: var(--accent); }
 .card textarea::placeholder, .card input::placeholder { color: var(--muted); opacity: 1; }
 .label { margin: 2px 0 0; }
 .presets { display: flex; flex-wrap: wrap; gap: 8px; }
