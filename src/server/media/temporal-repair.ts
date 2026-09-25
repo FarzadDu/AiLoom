@@ -563,6 +563,7 @@ export async function spliceTemporalRepair(
       "-i", sourcePath, "-i", repairedContextPath,
       "-filter_complex", filterComplex,
       "-map", "[video]", "-map", "0:a?",
+      "-r", plan.fpsRatio,
       "-frames:v", String(plan.totalFrames),
       "-c:v", "libx264", "-preset", "medium", "-crf", "18",
       "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",

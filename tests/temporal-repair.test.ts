@@ -191,6 +191,10 @@ test("splices only repaired interval and keeps audio mapped from original source
     assert.match(joined, /trim=start_frame=120:end_frame=300/);
     assert.match(joined, /0:a/);
     assert.deepEqual(splice[0].args.flatMap((arg, index) => arg === "-map" ? [splice[0].args[index + 1]] : []), ["[video]", "0:a?"]);
+    const outputRateIndex = splice[0].args.indexOf("-r");
+    assert.ok(outputRateIndex > splice[0].args.indexOf("-map"));
+    assert.equal(splice[0].args[outputRateIndex + 1], plan.fpsRatio);
+    assert.ok(outputRateIndex < splice[0].args.indexOf("-frames:v"));
   } finally {
     f.cleanup();
   }
