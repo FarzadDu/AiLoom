@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
 import type { ExploreTemplate } from "../src/components/content-api";
-import { createWorkflowRun, executeWorkflow, resolveWorkflowPrompt, restoreWorkflowRun, resumeWorkflowRun, supportsWorkflowModel, validateWorkflowRun } from "../src/components/explore-runner";
+import { createWorkflowRun, executeWorkflow, isUncertainWorkflowStep, restartUncertainWorkflowStep, resolveWorkflowPrompt, restoreWorkflowRun, resumeWorkflowRun, supportsWorkflowModel, validateWorkflowRun } from "../src/components/explore-runner";
 import { STARTER_TEMPLATES } from "../src/server/content/starter-templates";
 
 function template(steps: ExploreTemplate["definition"]["steps"]): ExploreTemplate {
@@ -317,6 +317,39 @@ test("a lost POST response replays the saved request key; terminal failure rotat
   const retry = resumeWorkflowRun(failed);
   assert.equal(retry.steps[0].requestId, undefined);
   assert.equal(retry.steps[0].jobId, undefined);
+});
+
+test("an uncertain provider submission cannot be retried without an explicit new paid request", async () => {
+  const recipe = template([{ id: "picture", title: "Picture", kind: "image", prompt: "Paint {{subject}}" }]);
+  const original = createWorkflowRun(recipe, "owner-1", { subject: "a kite" }, {});
+  let failed = original;
+  let requestId = "";
+  const calls: string[] = [];
+  await executeWorkflow(original, {
+    signal: new AbortController().signal,
+    fetcher: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(String(input));
+      if (String(input) === "/api/generations") {
+        requestId = new Headers(init?.headers).get("Idempotency-Key") || "";
+        return Response.json({ job: { id: imageJobId, state: "queued" } }, { status: 202 });
+      }
+      return Response.json({ job: { id: imageJobId, state: "failed", errorCode: "submission_uncertain" } });
+    }) as typeof fetch,
+    onUpdate: value => { failed = value; }
+  });
+  assert.deepEqual(calls, ["/api/generations", `/api/generations/${imageJobId}`]);
+  assert.equal(failed.status, "failed");
+  assert.equal(isUncertainWorkflowStep(failed.steps[0]), true);
+  const retried = resumeWorkflowRun(failed);
+  assert.equal(retried.status, "failed");
+  assert.equal(retried.steps[0].requestId, requestId);
+  assert.equal(retried.steps[0].jobId, imageJobId);
+
+  const restarted = restartUncertainWorkflowStep(failed);
+  assert.equal(restarted.status, "running");
+  assert.equal(restarted.steps[0].requestId, undefined);
+  assert.equal(restarted.steps[0].jobId, undefined);
+  assert.equal(restarted.steps[0].state, "waiting");
 });
 
 test("Social launch audio speaks generated words rather than directions", () => {

@@ -285,7 +285,7 @@ function ChatComposer({ locale, prompt, onPrompt, model, onModel, modelList, mod
           {voiceEnabled && mode === "text" && <ChatVoiceInput locale={locale} disabled={disabled} onTranscript={text => onPrompt([promptValueRef.current.trim(), text].filter(Boolean).join(" "))} />}
           <ModelPicker view="chat" locale={locale} value={model} onChange={onModel} options={modelList} />
         </div>
-        <button className="send-button" type="submit" disabled={disabled}><span>{t.send}</span><ArrowUp size={19} aria-hidden="true" /></button>
+        <button className="send-button" type="submit" aria-label={t.send} disabled={disabled}><span>{t.send}</span><ArrowUp size={19} aria-hidden="true" /></button>
       </div>
     </form>
   );

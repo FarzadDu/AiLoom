@@ -116,6 +116,9 @@ export function restoreWorkflowRun(raw: string | null, ownerId: string): Workflo
 }
 
 export function resumeWorkflowRun(run: WorkflowRun): WorkflowRun {
+  // The provider may have accepted an uncertain submission even though the
+  // worker cannot confirm it. An ordinary retry must never create a new key.
+  if (run.steps.some(isUncertainWorkflowStep)) return run;
   return { ...run, status: "running", steps: run.steps.map(step => {
     if (step.state !== "failed") return step;
     const terminal = step.error?.startsWith("Generation failed") ||
@@ -125,6 +128,19 @@ export function resumeWorkflowRun(run: WorkflowRun): WorkflowRun {
       jobId: terminal ? undefined : step.jobId,
       requestId: terminal ? undefined : step.requestId };
   }) };
+}
+
+export function isUncertainWorkflowStep(step: WorkflowStepState): boolean {
+  return step.state === "failed" && step.error === "Generation failed: submission_uncertain";
+}
+
+/** Called only after the user explicitly chooses a potentially paid new request. */
+export function restartUncertainWorkflowStep(run: WorkflowRun): WorkflowRun {
+  const index = run.steps.findIndex(isUncertainWorkflowStep);
+  if (run.status !== "failed" || index < 0) return run;
+  return { ...run, status: "running", steps: run.steps.map((step, position) => position === index
+    ? { ...step, state: "waiting", error: undefined, jobId: undefined, requestId: undefined }
+    : step) };
 }
 
 /** Resolve declared inputs and earlier step outputs. Unknown placeholders fail before provider submission. */

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { responseError, type SessionUser } from "./chat-api";
 import { resolveTemplatePrompt, specialistsFromPayload, templateFromPayload, templatesFromPayload, type ExploreStep, type ExploreTemplate, type SpecialistProfile } from "./content-api";
 import { copy, modelOptions, specialistCatalog, type Locale, type View } from "./workspace-data";
-import { createWorkflowRun, executeWorkflow, restoreWorkflowRun, resumeWorkflowRun, supportsWorkflowModel, validateWorkflowRun, type WorkflowAsset, type WorkflowRun } from "./explore-runner";
+import { createWorkflowRun, executeWorkflow, isUncertainWorkflowStep, restartUncertainWorkflowStep, restoreWorkflowRun, resumeWorkflowRun, supportsWorkflowModel, validateWorkflowRun, type WorkflowAsset, type WorkflowRun } from "./explore-runner";
 import { localizeStarterTemplate } from "./starter-template-locale";
 import { ThemedSelect } from "./themed-select";
 
@@ -22,7 +22,9 @@ const runCopy = {
     billingNote: "Media steps may use provider credits. Outputs stay private until you publish them.",
     stop: "Stop after current task", resume: "Resume sequence", retry: "Retry failed step",
     clear: "Dismiss run", openStep: "Open selected step in Studio", viewAsset: "Open output",
-    pendingJob: "A submitted provider job may continue even after stopping the sequence."
+    pendingJob: "A submitted provider job may continue even after stopping the sequence.",
+    uncertainJob: "The provider may still be processing this request. Starting a new one may charge again.",
+    newPaidRequest: "Start a new request (may cost again)"
   },
   fa: {
     runAll: "اجرای کامل گردش‌کار", running: "گردش‌کار در حال اجراست", done: "گردش‌کار کامل شد",
@@ -32,7 +34,9 @@ const runCopy = {
     billingNote: "مراحل رسانه‌ای ممکن است اعتبار سرویس‌دهنده مصرف کنند. خروجی‌ها تا زمان انتشار خصوصی هستند.",
     stop: "توقف زنجیره", resume: "ادامهٔ زنجیره", retry: "تلاش دوباره برای مرحلهٔ ناموفق",
     clear: "بستن نتیجه", openStep: "بازکردن مرحله در استودیو", viewAsset: "بازکردن خروجی",
-    pendingJob: "کاری که به سرویس‌دهنده فرستاده شده ممکن است بعد از توقف زنجیره هم ادامه یابد."
+    pendingJob: "کاری که به سرویس‌دهنده فرستاده شده ممکن است بعد از توقف زنجیره هم ادامه یابد.",
+    uncertainJob: "ممکن است سرویس‌دهنده هنوز درخواست قبلی را پردازش کند. درخواست تازه شاید دوباره هزینه داشته باشد.",
+    newPaidRequest: "شروع درخواست تازه (احتمال هزینهٔ دوباره)"
   }
 } as const;
 
@@ -167,7 +171,7 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
     const needsImage = modelId === "fal-ai/qwen-image-edit" || modelId === "fal-ai/veo3.1/fast/image-to-video" || modelId === "bytedance/seedance-2.5/reference-to-video";
     if (needsImage && !file) { setInputError(t.workflowReferenceRequired); return; }
     if (modelId === "fal-ai/ltx-2.3-quality/inpaint" && (!file || !["video/mp4", "video/webm"].includes(file.type))) { setInputError(t.workflowReferenceRequired); return; }
-    if (file && (selectedStep.kind === "audio" || selectedStep.kind === "chat" && !file.type.startsWith("image/") || selectedStep.kind === "image" && !file.type.startsWith("image/") || selectedStep.kind === "video" && !(file.type.startsWith("image/") || modelId === "fal-ai/ltx-2.3-quality/inpaint" && file.type.startsWith("video/")))) {
+    if (file && (selectedStep.kind === "audio" || selectedStep.kind === "chat" && !(file.type.startsWith("image/") || file.type === "application/pdf") || selectedStep.kind === "image" && !file.type.startsWith("image/") || selectedStep.kind === "video" && !(file.type.startsWith("image/") || modelId === "fal-ai/ltx-2.3-quality/inpaint" && file.type.startsWith("video/")))) {
       setInputError(t.workflowUnsupportedFile); return;
     }
     const resolved = resolveTemplatePrompt(selectedStep.prompt, selected.definition.inputs, inputValues, inputFiles);
@@ -298,10 +302,13 @@ export function ExplorePage({ locale, user, onUse, onLogin }: {
         })}</div>
         <div className="workflow-run-actions">
           {activeRun.status === "running" && <button type="button" className="outline-action" onClick={stopWorkflow}>{rt.stop}</button>}
-          {(activeRun.status === "stopped" || activeRun.status === "failed") && <button type="button" className="primary-action" onClick={resumeWorkflow}>{activeRun.status === "failed" ? rt.retry : rt.resume}<ArrowRight size={16} aria-hidden="true" /></button>}
+          {activeRun.status === "failed" && activeRun.steps.some(isUncertainWorkflowStep)
+            ? <button type="button" className="primary-action" onClick={() => persistRun(restartUncertainWorkflowStep(activeRun))}>{rt.newPaidRequest}<ArrowRight size={16} aria-hidden="true" /></button>
+            : (activeRun.status === "stopped" || activeRun.status === "failed") && <button type="button" className="primary-action" onClick={resumeWorkflow}>{activeRun.status === "failed" ? rt.retry : rt.resume}<ArrowRight size={16} aria-hidden="true" /></button>}
           {activeRun.status !== "running" && <button type="button" className="outline-action" onClick={() => persistRun(null)}>{rt.clear}</button>}
         </div>
         {activeRun.status === "stopped" && activeRun.steps.some(step => step.jobId && step.state !== "succeeded") && <p className="workflow-run-note">{rt.pendingJob}</p>}
+        {activeRun.status === "failed" && activeRun.steps.some(isUncertainWorkflowStep) && <p className="workflow-run-note" role="alert">{rt.uncertainJob}</p>}
       </div>}
       <div className="browse-layout">
         <div className="workflow-list" aria-label={t.exploreEyebrow}>

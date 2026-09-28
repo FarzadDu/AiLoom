@@ -32,7 +32,7 @@ export function reserveVoiceClone(input: {
     if (prior.ownerId !== input.ownerId || prior.name !== input.name ||
       prior.sampleHash !== input.sampleHash || prior.sampleMimeType !== input.sampleMimeType ||
       prior.sampleSizeBytes !== input.sampleSizeBytes) throw new VoiceRequestConflictError();
-    return { voice: prior, created: false };
+    return { voice: getOwnedVoiceClone(input.ownerId, requestId)!, created: false };
   }
   const now = new Date();
   const providerName = `${input.name.slice(0, 70)} · Ailoom ${requestId.replaceAll("-", "").slice(0, 16)}`;
@@ -46,7 +46,7 @@ export function reserveVoiceClone(input: {
   if (!current || current.ownerId !== input.ownerId || current.name !== input.name ||
     current.sampleHash !== input.sampleHash || current.sampleMimeType !== input.sampleMimeType ||
     current.sampleSizeBytes !== input.sampleSizeBytes) throw new VoiceRequestConflictError();
-  return { voice: current, created: inserted };
+  return { voice: inserted ? current : getOwnedVoiceClone(input.ownerId, requestId)!, created: inserted };
 }
 
 export function finishVoiceClone(ownerId: string, id: string,
@@ -57,6 +57,11 @@ export function finishVoiceClone(ownerId: string, id: string,
 }
 
 export function getOwnedVoiceClone(ownerId: string, id: string) {
+  const cutoff = new Date(Date.now() - STALE_AFTER_MS);
+  getDb().update(voiceClone).set({ state: "uncertain", updatedAt: new Date() })
+    .where(and(eq(voiceClone.ownerId, ownerId),
+      sql`lower(${voiceClone.id}) = ${id.toLowerCase()}`,
+      eq(voiceClone.state, "submitting"), lt(voiceClone.updatedAt, cutoff))).run();
   return getDb().select().from(voiceClone)
     .where(and(eq(voiceClone.ownerId, ownerId),
       sql`lower(${voiceClone.id}) = ${id.toLowerCase()}`)).get() ?? null;
@@ -93,7 +98,7 @@ export function reserveVoiceSpeech(input: {
   if (prior) {
     if (prior.ownerId !== input.ownerId || prior.cloneId !== input.cloneId ||
       prior.inputHash !== input.inputHash) throw new VoiceRequestConflictError();
-    return { speech: prior, created: false };
+    return { speech: getOwnedVoiceSpeech(input.ownerId, requestId)!, created: false };
   }
   const now = new Date();
   const row = { id: requestId, ownerId: input.ownerId, cloneId: input.cloneId,
@@ -103,7 +108,7 @@ export function reserveVoiceSpeech(input: {
   const current = getDb().select().from(voiceSpeech).where(eq(voiceSpeech.id, requestId)).get();
   if (!current || current.ownerId !== input.ownerId || current.cloneId !== input.cloneId ||
     current.inputHash !== input.inputHash) throw new VoiceRequestConflictError();
-  return { speech: current, created: inserted };
+  return { speech: inserted ? current : getOwnedVoiceSpeech(input.ownerId, requestId)!, created: inserted };
 }
 
 export function finishVoiceSpeech(ownerId: string, id: string,
@@ -115,6 +120,11 @@ export function finishVoiceSpeech(ownerId: string, id: string,
 }
 
 export function getOwnedVoiceSpeech(ownerId: string, id: string) {
+  const cutoff = new Date(Date.now() - STALE_AFTER_MS);
+  getDb().update(voiceSpeech).set({ state: "uncertain", updatedAt: new Date() })
+    .where(and(eq(voiceSpeech.ownerId, ownerId),
+      sql`lower(${voiceSpeech.id}) = ${id.toLowerCase()}`,
+      eq(voiceSpeech.state, "submitting"), lt(voiceSpeech.updatedAt, cutoff))).run();
   return getDb().select().from(voiceSpeech)
     .where(and(eq(voiceSpeech.ownerId, ownerId),
       sql`lower(${voiceSpeech.id}) = ${id.toLowerCase()}`)).get() ?? null;

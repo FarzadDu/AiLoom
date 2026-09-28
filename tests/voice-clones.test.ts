@@ -83,7 +83,9 @@ test("voice API is private, consent-gated and never repeats an uncertain provide
   const { voiceClone, voiceSpeech } = await import("../src/server/db/schema");
   const { createInvite } = await import("../src/server/auth/invites");
   const { getOwnedAsset } = await import("../src/server/content/assets");
-  const { getOwnedVoiceClone, getOwnedVoiceSpeech } = await import("../src/server/content/voice-clones");
+  const { finishVoiceClone, getOwnedVoiceClone, getOwnedVoiceSpeech,
+    reserveVoiceClone, reserveVoiceSpeech, sampleDigest, speechDigest } =
+    await import("../src/server/content/voice-clones");
   const authRoute = await import("../src/app/api/auth/[...all]/route");
   const voicesRoute = await import("../src/app/api/audio/voices/route");
   const speechRoute = await import("../src/app/api/audio/voices/[id]/speech/route");
@@ -150,6 +152,23 @@ test("voice API is private, consent-gated and never repeats an uncertain provide
       headers: { cookie: other.cookie }
     }));
     assert.deepEqual((await otherList.json()).voices, []);
+    const staleCloneKey = randomUUID();
+    reserveVoiceClone({ ownerId: owner.id, requestId: staleCloneKey,
+      name: "Stale voice", sampleHash: sampleDigest(MP3),
+      sampleMimeType: "audio/mpeg", sampleSizeBytes: MP3.length });
+    getDb().update(voiceClone).set({ updatedAt: new Date(Date.now() - 3 * 60_000) })
+      .where(eq(voiceClone.id, staleCloneKey)).run();
+    const staleCloneReplay = await sendClone(owner.cookie, staleCloneKey.toUpperCase(), cloneForm("Stale voice"));
+    assert.equal(staleCloneReplay.status, 202);
+    assert.equal((await staleCloneReplay.json()).voice.state, "uncertain");
+    assert.equal(getOwnedVoiceClone(owner.id, staleCloneKey)?.state, "uncertain");
+    assert.equal(cloneCalls, 1, "a stale clone request must not repeat the provider POST");
+    const activeCloneKey = randomUUID();
+    reserveVoiceClone({ ownerId: owner.id, requestId: activeCloneKey,
+      name: "Active voice", sampleHash: sampleDigest(MP3),
+      sampleMimeType: "audio/mpeg", sampleSizeBytes: MP3.length });
+    assert.equal(getOwnedVoiceClone(owner.id, activeCloneKey)?.state, "submitting");
+    assert.equal(finishVoiceClone(owner.id, activeCloneKey, "ready", "ActiveVoice123")?.state, "ready");
     const speechKey = randomUUID();
     const speechContext = { params: Promise.resolve({ id: cloneKey }) };
     const sendSpeech = (cookie: string, key: string, text: string) => speechRoute.POST(
@@ -186,6 +205,24 @@ test("voice API is private, consent-gated and never repeats an uncertain provide
       headers: { cookie: owner.cookie }
     }));
     assert.equal((await list.json()).speech[0].outputUrl, speech.outputUrl);
+    const staleSpeechKey = randomUUID();
+    const cloneId = getOwnedVoiceClone(owner.id, cloneKey)!.id;
+    reserveVoiceSpeech({ ownerId: owner.id, requestId: staleSpeechKey, cloneId,
+      inputHash: speechDigest(cloneId, "Stale request") });
+    getDb().update(voiceSpeech).set({ updatedAt: new Date(Date.now() - 3 * 60_000) })
+      .where(eq(voiceSpeech.id, staleSpeechKey)).run();
+    const staleReplay = await sendSpeech(owner.cookie, staleSpeechKey.toUpperCase(), "Stale request");
+    assert.equal(staleReplay.status, 202);
+    assert.equal((await staleReplay.json()).speech.state, "uncertain");
+    assert.equal(getOwnedVoiceSpeech(owner.id, staleSpeechKey)?.state, "uncertain");
+    assert.equal(speechCalls, 1, "a stale speech request must not repeat the paid provider POST");
+    const staleStatusKey = randomUUID();
+    reserveVoiceSpeech({ ownerId: owner.id, requestId: staleStatusKey, cloneId,
+      inputHash: speechDigest(cloneId, "Status request") });
+    getDb().update(voiceSpeech).set({ updatedAt: new Date(Date.now() - 3 * 60_000) })
+      .where(eq(voiceSpeech.id, staleStatusKey)).run();
+    assert.equal(getOwnedVoiceSpeech(owner.id, staleStatusKey)?.state, "uncertain",
+      "a direct status read must also expire an abandoned speech request");
 
     const uncertainKey = randomUUID();
     globalThis.fetch = async () => { cloneCalls++; throw new Error("network dropped after send"); };
